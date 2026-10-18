@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Windows 10 SDK target gives access to Windows.Media.Ocr (built-in Korean OCR). -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Physical-pixel coordinates so GetWindowRect and PrintWindow agree on high-DPI screens. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <Version>0.1.0</Version>
+    <AssemblyName>NineTalkDaemon</AssemblyName>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f6f4;
+  --surface: #ffffff;
+  --foreground: #1d1d1b;
+  --muted: #6b6b66;
+  --border: #e4e3de;
+  --kakao: #fee500;
+  --kakao-ink: #191600;
+  --accent: #3a6df0;
+  --danger: #d6453d;
+  --chat-bg: #bacee0;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-kakao: var(--kakao);
+  --color-kakao-ink: var(--kakao-ink);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-chat: var(--chat-bg);
+  --font-sans: var(--font-noto-kr), system-ui, sans-serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium
+    transition hover:bg-black/[0.03] disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-primary {
+  @apply border-transparent bg-foreground text-white hover:bg-foreground/90;
+}
+.btn-kakao {
+  @apply border-transparent bg-kakao text-kakao-ink hover:brightness-95;
+}
+.btn-danger {
+  @apply border-transparent bg-danger text-white hover:bg-danger/90;
+}
+.input {
+  @apply w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none
+    focus:border-foreground/40 focus:ring-2 focus:ring-foreground/10;
+}
+.card {
+  @apply rounded-xl border border-border bg-surface;
+}

@@ -1,0 +1,395 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { NoticeBar } from "@/components/notice-bar";
+import { useAction } from "@/components/use-action";
+import { createSendJob } from "@/lib/actions";
+import type { Friend, Group, SenderType } from "@/lib/data";
+import { NAME_TOKEN, renderMessage } from "@/lib/message";
+
+const MAX_FILES = 5;
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const SPEED_LABELS = ["", "아주 느리게", "느리게", "보통", "빠르게", "아주 빠르게"];
+const AD_PREFIX = "(광고) ";
+const AD_FOOTER = "\n\n무료 수신거부: 이 채팅방에 '수신거부'라고 보내 주세요.";
+
+type Attachment = { file: File; url: string };
+
+export function Composer({ groups, friends }: { groups: Group[]; friends: Friend[] }) {
+  const { pending, notice, setNotice, run } = useAction();
+  const router = useRouter();
+
+  const [groupIds, setGroupIds] = useState<Set<number>>(() => new Set(groups.filter((group) => group.isDefault).map((group) => group.id)));
+  const [extraIds, setExtraIds] = useState<Set<number>>(new Set());
+  const [friendQuery, setFriendQuery] = useState("");
+
+  const [tab, setTab] = useState<SenderType>("Honorific");
+  const [honorific, setHonorific] = useState("");
+  const [talkdown, setTalkdown] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [imageFirst, setImageFirst] = useState(false);
+  const [speedRate, setSpeedRate] = useState(3);
+  const [splitSendCount, setSplitSendCount] = useState("");
+  const [previewId, setPreviewId] = useState<number | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+
+  // Release preview object URLs on unmount; removals revoke their own URL.
+  const attachmentsRef = useRef(attachments);
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+  useEffect(() => () => attachmentsRef.current.forEach((attachment) => URL.revokeObjectURL(attachment.url)), []);
+
+  const removeAttachment = (index: number) => {
+    URL.revokeObjectURL(attachments[index].url);
+    setAttachments(attachments.filter((_, i) => i !== index));
+  };
+
+  const recipients = useMemo(
+    () => friends.filter((friend) => extraIds.has(friend.id) || friend.groupIds.some((id) => groupIds.has(id))),
+    [friends, groupIds, extraIds],
+  );
+  const talkdownCount = recipients.filter((friend) => friend.senderType === "TalkDown").length;
+  const preview = recipients.find((friend) => friend.id === previewId) ?? recipients[0] ?? null;
+  const previewText = preview ? renderMessage(preview.name, preview.senderType, honorific, talkdown) : "";
+
+  const searchResults = useMemo(() => {
+    const q = friendQuery.trim().toLowerCase();
+    if (!q) return [];
+    return friends.filter((friend) => friend.name.toLowerCase().includes(q)).slice(0, 30);
+  }, [friends, friendQuery]);
+
+  const currentText = tab === "Honorific" ? honorific : talkdown;
+  const setCurrentText = tab === "Honorific" ? setHonorific : setTalkdown;
+
+  const insertAtCursor = (snippet: string) => {
+    const el = textareaRef.current;
+    const start = el?.selectionStart ?? currentText.length;
+    const end = el?.selectionEnd ?? currentText.length;
+    setCurrentText(currentText.slice(0, start) + snippet + currentText.slice(end));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(start + snippet.length, start + snippet.length);
+    });
+  };
+
+  const addAdNotice = () => {
+    const withAd = (text: string) => (text.startsWith("(광고)") ? text : AD_PREFIX + text) + (text.includes("수신거부") ? "" : AD_FOOTER);
+    setHonorific(withAd(honorific));
+    if (talkdown.trim()) setTalkdown(withAd(talkdown));
+  };
+
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    const incoming = [...list];
+    const rejected = incoming.filter((file) => !file.type.startsWith("image/") || file.size > MAX_FILE_BYTES);
+    const accepted = incoming.filter((file) => !rejected.includes(file)).slice(0, MAX_FILES - attachments.length);
+    setAttachments([...attachments, ...accepted.map((file) => ({ file, url: URL.createObjectURL(file) }))]);
+    if (rejected.length > 0) setNotice({ tone: "error", text: "5MB 이하 이미지 파일만 첨부할 수 있습니다." });
+    else if (accepted.length < incoming.length) setNotice({ tone: "error", text: `이미지는 ${MAX_FILES}장까지 첨부할 수 있습니다.` });
+  };
+
+  const toggleSet = (setter: typeof setGroupIds, id: number) =>
+    setter((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const submit = () => {
+    const form = new FormData();
+    form.set("honorific", honorific);
+    form.set("talkdown", talkdown);
+    form.set("speedRate", String(speedRate));
+    form.set("splitSendCount", splitSendCount);
+    if (imageFirst) form.set("imageFirst", "on");
+    groupIds.forEach((id) => form.append("groupIds", String(id)));
+    extraIds.forEach((id) => form.append("friendIds", String(id)));
+    attachments.forEach((attachment) => form.append("files", attachment.file));
+
+    run(
+      () => createSendJob(form),
+      (result) => {
+        // Straight on to the jobs page, which asks to confirm and hands the request to the PC program.
+        if (result.id) {
+          router.push(`/jobs?send=${result.id}`);
+          return;
+        }
+        setSubmitted(true);
+        setHonorific("");
+        setTalkdown("");
+        attachments.forEach((attachment) => URL.revokeObjectURL(attachment.url));
+        setAttachments([]);
+        setExtraIds(new Set());
+      },
+    );
+  };
+
+  const canSubmit = recipients.length > 0 && (honorific.trim() || attachments.length > 0) && !pending;
+
+  return (
+    <div>
+      <NoticeBar notice={notice} onClose={() => setNotice(null)} />
+      {submitted && notice?.tone === "ok" && (
+        <p className="-mt-2 mb-4 text-sm">
+          <Link href="/jobs" className="font-medium text-accent underline">
+            발송 내역에서 확인하기 →
+          </Link>
+        </p>
+      )}
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="space-y-5">
+          <section className="card p-5">
+            <h2 className="mb-3 font-bold">1. 받는 사람</h2>
+            {groups.length === 0 && friends.length === 0 ? (
+              <p className="text-sm text-muted">
+                <Link href="/friends" className="text-accent underline">
+                  친구 관리
+                </Link>
+                에서 친구를 먼저 등록하세요.
+              </p>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {groups.map((group) => (
+                    <label
+                      key={group.id}
+                      className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${
+                        groupIds.has(group.id) ? "border-foreground bg-foreground text-white" : "border-border"
+                      }`}
+                    >
+                      <input type="checkbox" className="sr-only" checked={groupIds.has(group.id)} onChange={() => toggleSet(setGroupIds, group.id)} />
+                      {group.name}
+                      <span className="text-xs opacity-70">{group.memberCount}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="relative mt-4">
+                  <input className="input" placeholder="그룹 밖의 친구를 이름으로 찾아 추가" value={friendQuery} onChange={(event) => setFriendQuery(event.target.value)} />
+                  {searchResults.length > 0 && (
+                    <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-border bg-surface shadow-lg">
+                      {searchResults.map((friend) => (
+                        <li key={friend.id}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-black/[0.03]"
+                            onClick={() => {
+                              setExtraIds((current) => new Set(current).add(friend.id));
+                              setFriendQuery("");
+                            }}
+                          >
+                            {friend.name}
+                            {extraIds.has(friend.id) && <span className="text-xs text-muted">추가됨</span>}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {extraIds.size > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {friends
+                      .filter((friend) => extraIds.has(friend.id))
+                      .map((friend) => (
+                        <span key={friend.id} className="flex items-center gap-1 rounded bg-black/[0.05] px-2 py-0.5 text-xs">
+                          {friend.name}
+                          <button type="button" aria-label={`${friend.name} 빼기`} onClick={() => toggleSet(setExtraIds, friend.id)}>
+                            ✕
+                          </button>
+                        </span>
+                      ))}
+                  </div>
+                )}
+
+                <p className="mt-4 text-sm">
+                  총 <strong>{recipients.length}명</strong>
+                  <span className="text-muted">
+                    {" "}
+                    (존댓말 {recipients.length - talkdownCount} · 반말 {talkdownCount})
+                  </span>
+                </p>
+              </>
+            )}
+          </section>
+
+          <section className="card p-5">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <h2 className="mr-auto font-bold">2. 메시지</h2>
+              <div className="flex rounded-lg bg-black/[0.04] p-1 text-sm">
+                {(["Honorific", "TalkDown"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setTab(value)}
+                    className={`rounded-md px-3 py-1 font-medium ${tab === value ? "bg-surface shadow-sm" : "text-muted"}`}
+                  >
+                    {value === "Honorific" ? "존댓말" : "반말"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <textarea
+              ref={textareaRef}
+              className="input min-h-44 leading-relaxed"
+              maxLength={2000}
+              placeholder={
+                tab === "Honorific"
+                  ? `${NAME_TOKEN}님 안녕하세요! 이번 주 소식 전해드려요.`
+                  : `${NAME_TOKEN}아 잘 지내? 이번 주 소식 알려줄게.\n(비워 두면 존댓말 문구가 나갑니다)`
+              }
+              value={currentText}
+              onChange={(event) => setCurrentText(event.target.value)}
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button type="button" className="btn py-1 text-xs" onClick={() => insertAtCursor(NAME_TOKEN)}>
+                + {NAME_TOKEN} 넣기
+              </button>
+              <button type="button" className="btn py-1 text-xs" onClick={addAdNotice}>
+                + 광고 표기·수신거부 문구
+              </button>
+              <span className="ml-auto text-xs text-muted">{currentText.length} / 2000</span>
+            </div>
+            <p className="mt-3 text-xs text-muted">
+              광고·홍보 메시지라면 받는 분의 사전 동의가 있어야 하고, 맨 앞에 (광고) 표기와 수신거부 방법을 넣어야 합니다(정보통신망법 제50조).
+            </p>
+          </section>
+
+          <section className="card p-5">
+            <h2 className="mb-3 font-bold">3. 이미지 (선택)</h2>
+            <div className="flex flex-wrap gap-3">
+              {attachments.map((attachment, index) => (
+                <div key={attachment.url} className="relative h-24 w-24 overflow-hidden rounded-lg border border-border">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={attachment.url} alt={attachment.file.name} className="h-full w-full object-cover" />
+                  <button
+                    type="button"
+                    aria-label={`${attachment.file.name} 빼기`}
+                    className="absolute top-1 right-1 rounded-full bg-black/60 px-1.5 text-xs text-white"
+                    onClick={() => removeAttachment(index)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {attachments.length < MAX_FILES && (
+                <label className="flex h-24 w-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-border text-xs text-muted hover:bg-black/[0.02]">
+                  <span className="text-xl">＋</span>
+                  {attachments.length}/{MAX_FILES}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    multiple
+                    className="sr-only"
+                    onChange={(event) => {
+                      addFiles(event.target.files);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+              )}
+            </div>
+            {attachments.length > 0 && (
+              <label className="mt-3 flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={imageFirst} onChange={(event) => setImageFirst(event.target.checked)} />
+                이미지를 글보다 먼저 보내기
+              </label>
+            )}
+          </section>
+
+          <section className="card p-5">
+            <h2 className="mb-3 font-bold">4. 발송 설정</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block text-sm">
+                <span className="mb-1 flex justify-between">
+                  발송 속도 <span className="text-muted">{SPEED_LABELS[speedRate]}</span>
+                </span>
+                <input type="range" min={1} max={5} value={speedRate} onChange={(event) => setSpeedRate(Number(event.target.value))} className="w-full" />
+                <span className="mt-1 block text-xs text-muted">느릴수록 카카오 계정 제한 위험이 줄어듭니다.</span>
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block">나눠 보내기 (선택)</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    className="input w-28"
+                    inputMode="numeric"
+                    placeholder="예: 50"
+                    value={splitSendCount}
+                    onChange={(event) => setSplitSendCount(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                  />
+                  <span className="text-muted">명씩 끊어서</span>
+                </div>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-6 xl:self-start">
+          <section className="card overflow-hidden">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+              <h2 className="mr-auto text-sm font-bold">미리보기</h2>
+              {recipients.length > 0 && (
+                <select
+                  className="input w-auto max-w-40 py-1 text-xs"
+                  value={preview?.id ?? ""}
+                  onChange={(event) => setPreviewId(Number(event.target.value))}
+                  aria-label="미리볼 받는 사람"
+                >
+                  {recipients.slice(0, 500).map((friend) => (
+                    <option key={friend.id} value={friend.id}>
+                      {friend.name} ({friend.senderType === "Honorific" ? "존댓말" : "반말"})
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            <div className="min-h-72 space-y-2 bg-chat p-4">
+              {preview ? (
+                <>
+                  <p className="text-center text-xs text-black/50">{preview.name}님과의 채팅</p>
+                  {imageFirst && <PreviewImages attachments={attachments} />}
+                  {previewText.trim() && (
+                    <div className="ml-auto max-w-[85%] rounded-xl rounded-tr-sm bg-kakao px-3 py-2 text-sm whitespace-pre-wrap text-kakao-ink">
+                      {previewText}
+                    </div>
+                  )}
+                  {!imageFirst && <PreviewImages attachments={attachments} />}
+                  {!previewText.trim() && attachments.length === 0 && (
+                    <p className="pt-10 text-center text-xs text-black/50">문구를 입력하면 여기에 보입니다.</p>
+                  )}
+                </>
+              ) : (
+                <p className="pt-24 text-center text-xs text-black/50">받는 사람을 고르면 미리보기가 나옵니다.</p>
+              )}
+            </div>
+          </section>
+
+          <button type="button" className="btn btn-kakao w-full py-3 text-base" disabled={!canSubmit} onClick={submit}>
+            {pending ? "요청 만드는 중…" : `${recipients.length}명에게 보내기`}
+          </button>
+          <p className="text-center text-xs text-muted">발송 내역으로 넘어가 한 번 더 확인한 뒤, PC 프로그램이 PC 카카오톡으로 보냅니다.</p>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function PreviewImages({ attachments }: { attachments: Attachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="ml-auto flex max-w-[85%] flex-wrap justify-end gap-1">
+      {attachments.map((attachment) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img key={attachment.url} src={attachment.url} alt="" className="h-28 w-28 rounded-lg object-cover" />
+      ))}
+    </div>
+  );
+}

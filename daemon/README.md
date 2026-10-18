@@ -1,0 +1,180 @@
+# NineTalk 데몬 (PC 프로그램 PoC)
+
+웹 대시보드(`../web`)가 `http://localhost:47301/` 로 호출하는 PC 프로그램입니다. 규격은 [`../DAEMON_API.md`](../DAEMON_API.md).
+C# .NET 8 WinForms 트레이 앱이고, PC 카카오톡 창을 찾아 상태를 판정하고 **친구 탭의 이름을 화면 캡처 + OCR로 읽습니다.**
+발송(`POST /send`)도 됩니다: 실제 카카오톡에서 테스트 친구에게 1건 전송 확인(아래 "발송"). 웹 **발송 내역** 화면의 "PC 프로그램으로 발송" 버튼이 이 API를 씁니다.
+
+## 실행
+
+필요한 것: Windows 10/11, .NET 8 SDK, PC 카카오톡(로그인 상태), Windows 한국어 OCR(설정 > 시간 및 언어 > 언어에 한국어가 있으면 이미 있음).
+
+```bash
+cd daemon/NineTalkDaemon
+dotnet run
+```
+
+트레이에 아이콘이 생기고 `http://localhost:47301/` 이 열립니다. 우클릭 메뉴에 상태, 마지막 작업, "친구 읽기 중단", "종료"가 있습니다.
+
+- `web` 의 `npm run mock-daemon` 과 포트가 같습니다. **가짜 데몬은 끄고** 실행하세요(안 끄면 "포트를 열지 못했습니다" 창이 뜹니다).
+- 웹(`npm run dev`)에서 **친구 관리 > 카카오톡 친구 불러오기**(`/friends/import`)로 확인합니다.
+- 배포용 exe: `dotnet publish -c Release -r win-x64 --self-contained false` → `bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/NineTalkDaemon.exe`
+- 허용 Origin 기본값은 `http://localhost:3000`. 바꾸려면 환경변수 `NINETALK_ALLOWED_ORIGINS=https://내도메인,http://localhost:3000`.
+
+## API 구현 상태
+
+| 엔드포인트 | 상태 |
+|---|---|
+| `GET /status` | `Ready` / `GetKaoFriends` / `NotRunning` / `Locked` / `LoggedOut`. `last_error` 필드 추가(마지막 동기화 실패 사유) |
+| `POST /friends/synchronize` `Start-all` | 실제 카카오톡에서 동작 확인 |
+| `POST /friends/synchronize` `Start-search` | 전체를 읽은 뒤 이름에 키워드가 들어간 친구만 남김(아래 "안전" 참고) |
+| `POST /friends/synchronize` `Stop` | 동작 확인. 중단해도 카카오톡 창은 원래 상태로 복원 |
+| `GET /friends` | 규격 + 추가 필드: `friend_list[].ocr_uncertain`, `kakao_friend_count`(카톡의 "친구 N"), `unreadable_count` |
+| `POST /send` | 구현. 실제 전송 1건 확인(CLI). `images` 가 있으면 `400 images_not_supported`(이미지는 아직 못 보냄) |
+| `GET /send/result`, `POST /send/stop` | 구현. 웹에서 실제 데몬으로 1건 전송 확인, 중단은 mock-daemon으로 확인 |
+
+보안: 허용 목록에 없는 `Origin` 요청은 CORS 헤더만 빼는 게 아니라 **403으로 거절**합니다(다른 사이트가 `text/plain` 같은 단순 요청으로 동기화를 시작하는 것 차단). POST는 `Content-Type: application/json` 만 받습니다(415). `localhost` 프리픽스라 다른 Host 헤더(DNS 리바인딩)는 http.sys가 거절합니다. 프리플라이트에 `Access-Control-Allow-Private-Network: true` 포함.
+
+## 카카오톡 상태 판정 (`/status`)
+
+카카오톡(26.8.2 확인)은 자체 UI 툴킷(EVA)을 쓰고, 자식 창 이름이 `뷰이름_0x핸들` 형태라 구조를 읽을 수 있습니다.
+
+```
+EVA_Window_Dblclk "카카오톡"                ← 메인 창 (트레이로 내리면 숨김 상태)
+├─ OnlineMainView_…     (EVA_ChildWindow)   ← 로그인 상태 화면
+│  ├─ ContactListView_… → ContactListCtrl_… (EVA_VH_ListControl_Dblclk)  ← 친구 탭 목록
+│  ├─ ChatRoomListView_… → ChatRoomListCtrl_…                            ← 채팅 탭
+│  └─ MoreView_…
+└─ LockModeView_…       (EVA_ChildWindow_Dblclk, 비밀번호 Edit 4개)       ← 잠금 화면
+```
+
+- `KakaoTalk.exe` 프로세스 없음 → `NotRunning`
+- `LockModeView` 의 WS_VISIBLE → `Locked`, `OnlineMainView` 의 WS_VISIBLE → `Ready`, 둘 다 아니거나 이 창이 없으면 → `LoggedOut`
+- 창을 트레이로 숨겨도 자식 창의 WS_VISIBLE 비트는 유지돼서, 창을 건드리지 않고 판정합니다.
+- **실제로 확인한 것**: `Ready`(창 표시·숨김 두 경우 모두). **확인 못 한 것**: `NotRunning`, `Locked`, `LoggedOut`. 사용자 카카오톡을 끄거나 잠그거나 로그아웃하지 않았기 때문입니다. `NotRunning` 은 프로세스 유무만 보는 단순한 분기이고, `Locked`/`LoggedOut` 은 창 구조에서 추정한 판정입니다.
+
+## 친구 이름 읽기: 어떤 방식이 되나 (조사 결과)
+
+| 방식 | 결과 | 근거 |
+|---|---|---|
+| UI Automation (FlaUI가 쓰는 것과 같은 UIA) | ❌ | `ContactListCtrl` 이 Pane 하나로만 보이고 자식(행)이 0개 |
+| MSAA (IAccessible) | ❌ | 자식이 스크롤바·자식 창(role=window)뿐, 이름 없음 |
+| Win32 (EnumChildWindows / GetWindowText) | ❌ | 창 텍스트는 `ContactListCtrl_0x…` 뿐. 목록은 직접 그리는(owner-drawn) 컨트롤 |
+| **PrintWindow 캡처 + Windows.Media.Ocr(한국어)** | ⭕ (정확도 한계 있음) | 아래 |
+
+그래서 FlaUI 패키지는 넣지 않았습니다. 원본 나인톡도 Tesseract(kor) OCR을 같이 쓰는 이유가 이것으로 보입니다.
+
+### 동작 순서 (`FriendListReader.cs`)
+
+1. 창이 숨겨져(트레이) 있으면 `ShowWindow(SW_SHOWNOACTIVATE)` 로 **활성화 없이** 표시합니다. 숨긴 창은 PrintWindow가 검은 화면만 줍니다(확인함).
+2. 친구 탭이 아니면 왼쪽 탭 줄의 사람 아이콘(OnlineMainView 기준 32,27)에 클릭 메시지를 보냅니다.
+3. 친구 목록에 `WM_MOUSEWHEEL` 을 보내 맨 위로 올린 뒤, 4칸(약 360px)씩 내리며 `PrintWindow` 로 목록을 캡처합니다(다른 창에 가려져도 캡처됨).
+4. 연속 캡처 두 장의 픽셀 행을 비교해 **실제로 스크롤된 픽셀 수**를 구하고, 목록 좌표를 누적합니다. 마우스가 올라간 행의 hover 배경은 무시합니다.
+5. 전체 페이지 OCR로 `친구 428` 같은 헤더를 찾아 그 아래부터 56px 간격으로 행을 셉니다. 내 프로필, 업데이트한 친구, 생일인 친구, 즐겨찾기 구간은 건너뜁니다. 헤더의 숫자는 기대 인원으로 씁니다.
+6. 각 행에서 진한 글씨(이름)만 남기고 회색 상태메시지는 지운 뒤 OCR합니다. 행 하나만 OCR하는 방식과 한 페이지 이름을 세로로 쌓아 OCR하는 방식을 각각 4개 배율로 돌려 투표합니다. 기호가 섞인 오독(`7\`다훈`)보다 깨끗한 한글 읽기에 가산점을 줍니다.
+7. 끝나면(중단·오류 포함) 원래 탭과 숨김·최소화 상태로 되돌립니다.
+
+같은 이름의 두 친구는 위치가 달라서 둘 다 남고, `duplicate_friend_list` 에 들어갑니다(실제 계정에서 동명이인 3쌍 확인).
+
+### 실제 계정 측정 결과 (친구 428명, 2026-10-18)
+
+| 항목 | 값 |
+|---|---|
+| 걸린 시간 | 약 48초 (웹에서 "전체 불러오기") |
+| 행 찾기 | 428 / 428 |
+| 이름을 읽음 | 405명, 그중 판독이 갈린 것(`ocr_uncertain`) 109명 |
+| 이름을 못 읽음 | 23행 (`unreadable_count`; 결과에서 빠짐) |
+| 눈에 띄는 오독 | `김`→`7\``·`71`·`기`, `ㅂㅅ진` 같은 자모 이름, `Nguyễn`→`NguyBn` |
+
+**한계:** Windows 내장 OCR은 카카오톡 목록의 작은 굵은 한글(약 12px)에 약합니다. 특히 `김`을 자주 틀립니다. 이름이 한 글자라도 틀리면 나중에 이름 검색으로 보낼 때 다른 사람이 걸리거나 아무도 안 걸릴 수 있습니다. 그래서 지금 결과는 "후보 목록"으로 보고, 사용자가 웹에서 확인한 뒤 등록하는 흐름이 전제입니다.
+
+정확도를 올릴 다음 후보:
+1. **Tesseract `kor`** (원본 나인톡이 쓰는 엔진): NuGet `Tesseract` + `kor.traineddata` 를 받아 같은 이름 상자로 비교. 이 PoC에서는 파일을 새로 받지 않으려고 시도하지 않았습니다.
+2. 발송 단계에서 검증: 이름으로 친구 검색 → 결과 목록을 캡처·OCR해 정확히 한 명일 때만 진행(어차피 발송에 필요한 단계).
+3. 웹 검토 화면에 `ocr_uncertain`·`unreadable_count` 를 표시하고 이름을 고칠 수 있게 하기.
+
+### 안전 (실제 계정에서 동작하므로)
+
+- 목록 안은 **클릭하지 않습니다**. 더블클릭·Enter·키 입력을 보내지 않아서 채팅방이 열릴 수 없습니다. 보내는 메시지는 ① 창 표시(활성화 없음) ② 탭 아이콘 클릭 ③ 친구 목록 마우스 휠, 세 가지뿐입니다.
+- `Start-search` 는 카카오톡 검색창에 글자를 넣지 않고 전체 결과를 거르는 방식입니다. 검색창에 포커스가 있을 때 Enter가 들어가면 채팅방이 열리기 때문입니다.
+- 읽는 도중 잠금이 걸리거나 사용자가 탭을 바꾸면 즉시 멈춥니다.
+- 원본 나인톡(`%LOCALAPPDATA%\NineBox\NineTalk`, 46301)의 코드나 `Abalone.dll` 은 쓰지 않습니다.
+
+## 발송 (`KakaoSender.cs`, `SendService.cs`)
+
+한 명 보내는 순서 (모두 창 메시지, 전역 키보드·마우스 입력 없음):
+
+1. 친구 탭 검색창(`ContactListView` 안의 `Edit`)에 이름을 `WM_SETTEXT` → 검색 결과 목록(`SearchListCtrl`)을 캡처해 프로필 사진 수로 결과 수를 셉니다. 0명 `not_found`, 2명 이상 `duplicate_name`(아무것도 열지 않음).
+2. 검색창에 Enter → 결과 1명과의 채팅방이 새 창(`EVA_Window_Dblclk`)으로 열림.
+3. 채팅창 제목(`GetWindowText`)이 이름과 정확히 같아야 진행, 아니면 `room_mismatch`.
+4. 입력창(`RICHEDIT50W`)에 `EM_REPLACESEL` 로 문구 → 노란 "전송" 버튼을 캡처로 찾아 클릭 → 버튼이 회색으로 돌아가면 `sent`, 5초 안에 안 돌아가면 문구를 지우고 `send_failed`. (입력창 글자 수로 판정하던 때는 실제로 나간 메시지를 `send_failed` 로 잘못 보고했음)
+5. 연 채팅창 `WM_CLOSE`, 검색창 비우고 닫기, 원래 탭·숨김 상태 복원.
+
+간격: `speed_rate` 1~5 → 20/14/10/7/5초 + 무작위 0~3초, `split_send_count` 명마다 90초 더 쉼. 친구 읽기와 발송은 동시에 돌지 않습니다.
+
+### 실제 확인 결과 (테스트 친구 "ㅂㅅ진", 2026-10-18)
+
+| 단계 | 결과 |
+|---|---|
+| 검색 결과 수 | ⭕ 1명으로 셈 (내 이름은 0명: 친구 검색에 내 프로필은 안 나와서 "나와의 채팅"은 이 경로로 못 엶) |
+| 채팅방 열기 · 제목 확인 · 입력창 찾기 · 문구 넣기 | ⭕ dry-run 2회 성공, 닫기와 탭 복원 확인 |
+| **Enter로 전송** | ❌ 2회 시도 모두 입력창이 비지 않아 `send_failed`. `WM_KEYDOWN` 만(1차), 스캔코드+`WM_CHAR` 포함(2차) 둘 다 안 먹힘. 사용자가 채팅방에서 실제로 0건 나간 것을 확인함 |
+| 입력창에 넣는 방식 | `WM_SETTEXT` 로 넣으면 글자는 보이지만 "전송" 버튼이 회색(비활성) → 카카오톡이 입력으로 인식 안 함. `EM_REPLACESEL`(붙여넣기와 같은 경로)로 바꾸니 버튼이 노랗게 활성화됨 |
+| **전송 버튼 클릭** (3차) | ⭕ `EM_REPLACESEL` + 노란 버튼 위치를 캡처로 찾아 클릭 메시지(`WM_LBUTTONDOWN/UP`) → **실제로 전송됨**(사용자가 채팅방에서 확인). 다만 당시 판정(입력창 글자 수)이 `send_failed` 로 잘못 보고 → 버튼 색 판정으로 바꿈(바꾼 판정은 실제 전송으로 아직 재확인 안 함) |
+| 창 숨김 복원 | 1차 dry-run에서 채팅창을 닫은 뒤 카카오톡이 메인 창을 다시 띄움 → 숨김을 몇 번 다시 하도록 고침(재확인은 안 함) |
+
+| **웹 → 실제 데몬** (4차) | ⭕ 발송 내역 "PC 프로그램으로 발송" → ㅂㅅ진 1건, 데몬 `sent`(버튼 색 판정) → 웹 DB `sent`, 요청 "완료". 사용자가 채팅방에서 정확히 1건 도착 확인. 카카오톡은 숨김·채팅 탭·검색 닫힘으로 복원 |
+
+남은 것:
+- 여러 명 발송(간격·`split_send_count` 휴식)은 실제 계정으로 돌려 보지 않음.
+- 이미지 보내기(클립보드 붙여넣기 등) 미구현.
+- 검색이 부분 일치라 "김준"을 찾으면 "김준수"도 나와 `duplicate_name` 이 됩니다(보내지 않는 쪽으로 안전).
+
+### 웹 연결 (web/)
+
+- `app/(app)/jobs/jobs-list.tsx`: 대기 중 요청에 "PC 프로그램으로 발송" 버튼. 확인 창 → `/status` 가 Ready인지 → `getSendPayload`(서버) → `POST /send` → 1.5초마다 `/send/result` 를 읽어 새 결과만 `recordSendResults` 로 기록 → 끝나면 완료(남은 사람 있으면 대기 중으로). "중단" 버튼, 실패자 목록(사유 표시), 탭을 다시 열면 진행 중인 발송 결과를 이어 받음, 연결이 끊긴 "발송 중" 요청은 "대기로 되돌리기".
+- 이미지가 있는 요청은 버튼을 막아 둡니다(데몬이 이미지를 아직 못 보냄).
+- `scripts/mock-daemon.mjs`: `/send`, `/send/result`, `/send/stop` 흉내(7번째마다 `not_found`, 이미지면 400).
+- `lib/data.ts`: 실패자 목록 행을 일반 객체로 바꿔 넘김(node:sqlite 행은 null prototype이라 클라이언트 컴포넌트로 못 넘겨 화면 오류가 났음).
+
+### dry-run / 1건 테스트
+
+```bash
+dotnet build -c Debug -o bin/SendTest
+./bin/SendTest/NineTalkDaemon.exe --send-test "친구이름" "문구"          # dry-run: 입력창에 넣고 지운 뒤 닫음
+./bin/SendTest/NineTalkDaemon.exe --send-test "친구이름" "문구" --send   # 실제 전송 (진짜로 나갑니다)
+```
+
+로그: `%LOCALAPPDATA%\NineTalkDaemon\send-test.log` (트레이 데몬이 떠 있어도 HTTP를 안 쓰므로 함께 돌려도 됩니다).
+
+## 진단 도구
+
+```bash
+# 읽기 전용: 카카오톡 창 구조·상태 출력, 친구 탭이 열려 있으면 캡처+OCR (채팅 탭이면 캡처를 저장하지 않음)
+NineTalkDaemon.exe --probe 출력폴더
+
+# 동기화할 때 페이지 캡처를 저장 (환경변수를 켜고 데몬 실행)
+set NINETALK_DEBUG_DIR=C:\temp\pages
+# 저장된 캡처로 카카오톡 없이 읽기 로직만 다시 실행 → 폴더\replay.txt
+NineTalkDaemon.exe --replay C:\temp\pages
+```
+
+동기화 로그(행마다 읽은 이름과 배율별 판독)는 매번 `%LOCALAPPDATA%\NineTalkDaemon\last-sync.log` 에 덮어씁니다. 친구 이름이 들어 있으니 공유하지 마세요.
+
+## 레이아웃 가정 (카카오톡 업데이트에 취약한 부분)
+
+`FriendListReader.cs` 맨 위 상수에 모여 있습니다. 카카오톡 26.8, 100% 배율 기준이고 창 DPI에 맞춰 곱합니다. 탭 아이콘 위치, 행 간격 56px, 프로필 40px(x 20~56), 이름 시작 x 64, 이름 글자 밝기 90 미만이 들어 있습니다. 다크 모드는 확인하지 않았습니다(이름 밝기 판정이 반대라 동작하지 않을 것).
+
+## 파일
+
+| 파일 | 내용 |
+|---|---|
+| `Program.cs` | 진입점 (트레이 / `--probe` / `--replay` / `--send-test`) |
+| `TrayContext.cs` | 트레이 아이콘·메뉴, HTTP 서버 시작 |
+| `HttpServer.cs` | HttpListener, CORS, 라우팅 |
+| `FriendSync.cs` | 동기화 작업 1개 관리(시작·중단·결과·로그) |
+| `KakaoWindow.cs` | 카카오톡 창 찾기·상태 판정 |
+| `FriendListReader.cs` | 친구 탭 스크롤·캡처·행 추적·이름 OCR |
+| `Capture.cs`, `Ocr.cs`, `Native.cs` | PrintWindow, Windows.Media.Ocr, Win32 선언 |
+| `Probe.cs` | `--probe` 진단 |
+| `KakaoSender.cs` | 한 명 발송: 검색·결과 수·채팅방 제목 확인·입력·전송·닫기 |
+| `SendService.cs` | 발송 작업 1개 관리(간격, 중단, 결과 보관) |
