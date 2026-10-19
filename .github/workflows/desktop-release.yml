@@ -1,0 +1,109 @@
+# Builds the desktop app for Mac (Apple Silicon) and Windows (desktop/README.md).
+#
+# - Run it by hand (Actions > desktop-release > Run workflow): builds both installers and keeps them as
+#   workflow artifacts only. Nothing is released.
+# - Push a tag vX.Y.Z (matching desktop/package.json "version"): builds both and publishes a GitHub
+#   pre-release with the installers attached.
+#
+# Unsigned for now. Signing later: add CSC_LINK / CSC_KEY_PASSWORD (+ APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# APPLE_TEAM_ID for Mac notarization) as repository secrets and drop CSC_IDENTITY_AUTO_DISCOVERY below.
+name: desktop-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15 # Apple Silicon runner: arm64 dmg, Swift for kakao-mac
+            script: dist:mac
+            files: desktop/dist/*.dmg
+          - os: windows-latest # .NET for the C# daemon, NSIS installer
+            script: dist:win
+            files: desktop/dist/*.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60 # the Windows installer packs the web server and the self-contained .NET daemon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches desktop/package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match desktop/package.json version $version"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # web needs node:sqlite (22.13+)
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop
+
+      - name: Build installer
+        run: npm run ${{ matrix.script }}
+        working-directory: desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ runner.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    # Only a tag push releases; a manual run started on a tag still just builds.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la installers
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" installers/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" installers/* --repo "$GITHUB_REPOSITORY" \
+              --prerelease --verify-tag --title "$GITHUB_REF_NAME (시험판)" --generate-notes
+          fi

@@ -60,7 +60,7 @@ npm run mock-daemon                   # 터미널 2 (47301, 친구 불러오기�
 ## 다음 할 일
 
 1. **Windows PC에서 데스크톱 앱 확인** (일렉트론 전환은 맥에서 끝냄)
-   - `cd desktop && npm install && npm run dist:win` → `dist/NineTalkClone Setup 0.1.0.exe` 설치·실행. 웹 빌드는 Windows에서 새로 해야 합니다(`sharp` 등 플랫폼별 파일).
+   - `cd desktop && npm install && npm run dist:win` → `dist/NineTalkClone-0.1.0-win-x64.exe` 설치·실행. 웹 빌드는 Windows에서 새로 해야 합니다(`sharp` 등 플랫폼별 파일).
    - 데몬 C# 변경(`POST /shutdown`, `--parent-pid`, 기본 허용 Origin에 `http://127.0.0.1:47300`)은 맥에 .NET SDK가 없어 **컴파일도 안 해 봤습니다**. 먼저 `dotnet build` 확인.
    - 확인할 것: 앱 실행 시 트레이에 데몬이 뜨는지, 앱을 끄면 트레이 아이콘이 사라지는지, 작업 관리자로 앱을 죽였을 때 2초 안에 데몬도 꺼지는지, `dotnet run` 으로 데몬을 먼저 띄워 두면 앱이 그걸 그대로 쓰는지, 친구 불러오기·1건 발송(테스트 친구, 매번 허락 받고).
    - 카카오 로그인은 데스크톱 앱에서 뺐습니다(사용자 결정, 로컬 사용자 1명). 웹 단독(`web/`, `npm run dev`)에는 그대로 있습니다. 기존 `web/data/ninetalk.db` 의 데이터는 앱 데이터 폴더(`%APPDATA%\NineTalkClone\data`)로 자동으로 옮겨지지 않고, 사용자도 카카오 사용자 → 로컬 사용자로 바뀌어 있어서, 옮기려면 별도 작업이 필요합니다.
