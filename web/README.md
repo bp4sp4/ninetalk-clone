@@ -12,7 +12,7 @@ npm run dev                  # http://localhost:3000
 npm run mock-daemon          # (선택) 가짜 PC 프로그램, 친구 불러오기 테스트용
 ```
 
-데이터는 `data/ninetalk.db`(SQLite, Node 24 내장 `node:sqlite`)와 `data/uploads/`(첨부 이미지)에 저장됩니다.
+데이터는 `data/ninetalk.db`(SQLite, Node 22.13 이상 내장 `node:sqlite`)와 `data/uploads/`(첨부 이미지)에 저장됩니다.
 
 ### 데스크톱 앱에서 쓸 때 (환경변수)
 

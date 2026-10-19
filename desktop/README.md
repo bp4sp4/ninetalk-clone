@@ -40,12 +40,24 @@ npm run dist:mac           # (선택) dist/mac-arm64/NineTalkClone.app 로 패�
 
 ```bash
 npm install
-npm run dist:win      # build:web + build:daemon + electron-builder --win → dist/NineTalkClone Setup 0.1.0.exe
+npm run dist:win      # build:web + build:daemon + electron-builder --win → dist/NineTalkClone-0.1.0-win-x64.exe
 ```
 
 - `build:daemon` 은 `dotnet publish -c Release -r win-x64 --self-contained true` 로 `build/daemon` 에 게시합니다(사용자 PC에 .NET 런타임 설치 불필요).
 - **웹 빌드는 반드시 Windows에서 다시** 하세요. standalone 결과에 플랫폼별 바이너리(`sharp` 등)가 들어가서, 맥에서 만든 `build/web` 은 Windows에서 쓸 수 없습니다. `dist:win` 은 매번 새로 빌드합니다.
 - 서명하지 않은 설치 파일이라 Windows SmartScreen 경고가 뜹니다.
+
+## GitHub Actions로 빌드·릴리즈 (`.github/workflows/desktop-release.yml`)
+
+GitHub 빌드 서버에서 맥(Apple Silicon `.dmg`)과 Windows(`.exe` 설치 파일)를 함께 만듭니다. Windows PC가 없어도 Windows 설치 파일이 나옵니다(실제 동작 확인은 Windows PC에서).
+
+- **시험 빌드**: GitHub > Actions > desktop-release > Run workflow. 설치 파일은 그 실행의 Artifacts(14일 보관)에만 남고 릴리즈는 안 만듭니다.
+- **릴리즈**: `desktop/package.json` 의 `version` 을 올리고(윈도 데몬 `daemon/NineTalkDaemon/NineTalkDaemon.csproj` 의 `<Version>`, 맥 데몬 `daemon-mac/server.mjs` 의 `VERSION` 도 같이) 커밋한 뒤 같은 번호로 태그를 push 합니다. 두 설치 파일이 시험판(pre-release)으로 올라갑니다. 태그와 `version` 이 다르면 빌드가 멈춥니다.
+  ```bash
+  git tag v0.1.1 && git push origin v0.1.1
+  ```
+- 비공개 저장소라 Actions 사용 시간이 무료 한도(월 2,000분)에서 빠집니다. 맥은 10배, Windows는 2배로 계산되어 한 번에 대략 70~100분 정도입니다.
+- 지금은 서명 없이 빌드합니다. 서명하려면 저장소 Secrets에 `CSC_LINK`·`CSC_KEY_PASSWORD`(인증서), 맥 공증용 `APPLE_ID`·`APPLE_APP_SPECIFIC_PASSWORD`·`APPLE_TEAM_ID` 를 넣고, 워크플로의 `CSC_IDENTITY_AUTO_DISCOVERY: "false"` 를 빼면 됩니다(Apple 개발자 등록 연 $99, Windows 코드 서명 인증서 별도).
 
 ## 파일
 
