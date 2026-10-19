@@ -14,4 +14,13 @@
     <AssemblyName>NineTalkDaemon</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PaddleOCR korean_PP-OCRv5_mobile_rec as ONNX (Apache 2.0), from huggingface.co/monkt/paddleocr-onnx -->
+    <None Include="Models\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

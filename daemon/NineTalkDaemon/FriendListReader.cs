@@ -99,7 +99,8 @@ static class FriendListReader
                     top = snapped.Top;
                 }
                 if (top + S(AvatarSize) > page.Height - 2) break; // not whole yet: next page
-                if (!HasAvatar(page, top))
+                // A very light profile picture can miss the avatar check; a name in the row still counts.
+                if (!HasAvatar(page, top) && NameBox(page, new Band(top, top + S(AvatarSize)), S(NameLeft)) is null)
                 {
                     if (expected is null) { ended = true; break; } // no count known: an empty row is the end
                     unreadable++;
@@ -118,7 +119,8 @@ static class FriendListReader
                 if (name is null) { unreadable++; log($"{label} 이름을 읽지 못함 {readings}"); continue; }
                 total++;
                 if (name.Uncertain) uncertain++;
-                log($"{label} {name.Name}{(name.Uncertain ? $"  (?) {readings}" : "")}");
+                var showReadings = name.Uncertain || Environment.GetEnvironmentVariable("NINETALK_OCR_COMPARE") == "1";
+                log($"{label} {name.Name}{(name.Uncertain ? "  (?)" : "")}{(showReadings ? " " + readings : "")}");
                 onName(name);
             }
             return !ended && (expected is null || nextRow < expected);
@@ -334,12 +336,59 @@ static class FriendListReader
         return letters.Length == 2 && letters[1] == '구';
     }
 
+    /// <summary>Below this mean character confidence a PaddleOCR reading is marked uncertain.</summary>
+    const float PaddleMinConfidence = 0.85f;
+
     /// <summary>
-    /// OCRs the name beside one avatar at three zoom levels and takes the most common reading.
-    /// Windows OCR misreads small Hangul differently per zoom (김 → "71", "7`"), so disagreement
-    /// between zoom levels marks the name as uncertain for the user to check.
+    /// Reads the names beside the given avatars. Uses the PaddleOCR Korean model when it is installed
+    /// (Models/korean), otherwise Windows OCR. NINETALK_OCR=windows forces Windows OCR, and
+    /// NINETALK_OCR_COMPARE=1 also runs Windows OCR and puts both readings in the log.
     /// </summary>
     static async Task<List<(FriendName? name, string readings)>> ReadNamesAsync(Page page, List<Band> bands, int nameLeft)
+    {
+        var paddle = Environment.GetEnvironmentVariable("NINETALK_OCR") == "windows" ? null : PaddleRec.Shared;
+        if (paddle is null) return await ReadNamesWindowsOcrAsync(page, bands, nameLeft);
+
+        var compare = Environment.GetEnvironmentVariable("NINETALK_OCR_COMPARE") == "1"
+            ? await ReadNamesWindowsOcrAsync(page, bands, nameLeft)
+            : null;
+        var results = new List<(FriendName?, string)>();
+        for (int i = 0; i < bands.Count; i++)
+        {
+            var box = NameBox(page, bands[i], nameLeft);
+            if (box is null) { results.Add((null, "[이름 글자 없음]")); continue; }
+            var (text, confidence) = paddle.Recognize(page.Image, TightenRight(page, box.Value));
+            var debug = $"[paddle {confidence:F2}]" + (compare is null ? "" : $" windows: {compare[i].name?.Name ?? "-"}");
+            results.Add(text.Length == 0
+                ? (null, debug)
+                : (new FriendName(text, Uncertain: confidence < PaddleMinConfidence), debug));
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Cuts the empty space right of the name (the recognizer reads a long blank tail as noise), keeping
+    /// a margin. Any non-background pixel counts, so coloured emoji in a name stay inside.
+    /// </summary>
+    static Rectangle TightenRight(Page page, Rectangle box)
+    {
+        int lastInk = box.Left;
+        for (int y = Math.Max(0, box.Top); y < Math.Min(page.Height, box.Bottom); y++)
+        {
+            int bg = page.Pixels[y * page.Width + 4];
+            for (int x = box.Right - 1; x > lastInk; x--)
+                if (!Near(page.Pixels[y * page.Width + x], bg, 40)) { lastInk = x; break; }
+        }
+        int margin = (int)(8 * page.Scale);
+        return Rectangle.FromLTRB(box.Left, box.Top, Math.Min(box.Right, lastInk + margin), box.Bottom);
+    }
+
+    /// <summary>
+    /// Windows OCR path: OCRs the name beside one avatar at several zoom levels and votes.
+    /// Windows OCR misreads small Hangul differently per zoom (김 → "71", "7`"), so disagreement
+    /// between readings marks the name as uncertain for the user to check.
+    /// </summary>
+    static async Task<List<(FriendName? name, string readings)>> ReadNamesWindowsOcrAsync(Page page, List<Band> bands, int nameLeft)
     {
         var results = new List<(FriendName?, string)>();
         if (bands.Count == 0) return results;

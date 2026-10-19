@@ -61,9 +61,18 @@ EVA_Window_Dblclk "카카오톡"                ← 메인 창 (트레이로 내
 | UI Automation (FlaUI가 쓰는 것과 같은 UIA) | ❌ | `ContactListCtrl` 이 Pane 하나로만 보이고 자식(행)이 0개 |
 | MSAA (IAccessible) | ❌ | 자식이 스크롤바·자식 창(role=window)뿐, 이름 없음 |
 | Win32 (EnumChildWindows / GetWindowText) | ❌ | 창 텍스트는 `ContactListCtrl_0x…` 뿐. 목록은 직접 그리는(owner-drawn) 컨트롤 |
-| **PrintWindow 캡처 + Windows.Media.Ocr(한국어)** | ⭕ (정확도 한계 있음) | 아래 |
+| PrintWindow 캡처 + Windows.Media.Ocr(한국어) | △ 405/428명, 109명 불확실 | 처음 구현. 작은 굵은 한글(특히 `김`)에 약함 |
+| **PrintWindow 캡처 + PaddleOCR 한국어 인식 모델** | ⭕ 428/428명, 6명 불확실 | 지금 기본값. 아래 |
 
 그래서 FlaUI 패키지는 넣지 않았습니다. 원본 나인톡도 Tesseract(kor) OCR을 같이 쓰는 이유가 이것으로 보입니다.
+
+### 이름 인식 엔진 (`PaddleRec.cs`)
+
+- 모델: PaddleOCR `korean_PP-OCRv5_mobile_rec` 의 ONNX 변환본(`Models/korean/rec.onnx` 13MB + `dict.txt`, Apache 2.0, 출처 [huggingface.co/monkt/paddleocr-onnx](https://huggingface.co/monkt/paddleocr-onnx) `languages/korean`). 실행은 NuGet `Microsoft.ML.OnnxRuntime`.
+- 글자 **인식 모델만** 씁니다. 이름 줄의 위치는 데몬이 이미 픽셀로 찾으므로(진한 글씨 줄 + 오른쪽 빈칸 잘라냄) PaddleOCR의 글자 영역 검출 모델은 필요 없습니다.
+- 입력: 이름 줄을 높이 48로 늘려 BGR, `[-1, 1]` 정규화. 출력은 CTC 탐욕 디코딩(0 = blank, 사전 + 공백). 글자 평균 확신도가 0.85 미만이면 `ocr_uncertain`.
+- `Models/korean` 이 없거나 모델을 못 읽으면 예전 Windows OCR 경로로 돌아갑니다. 강제로 쓰려면 `NINETALK_OCR=windows`, 두 엔진을 같이 돌려 로그에 나란히 남기려면 `NINETALK_OCR_COMPARE=1`.
+- "친구 N" 헤더 찾기는 계속 Windows OCR을 씁니다(헤더 글자는 잘 읽힘).
 
 ### 동작 순서 (`FriendListReader.cs`)
 
@@ -72,27 +81,24 @@ EVA_Window_Dblclk "카카오톡"                ← 메인 창 (트레이로 내
 3. 친구 목록에 `WM_MOUSEWHEEL` 을 보내 맨 위로 올린 뒤, 4칸(약 360px)씩 내리며 `PrintWindow` 로 목록을 캡처합니다(다른 창에 가려져도 캡처됨).
 4. 연속 캡처 두 장의 픽셀 행을 비교해 **실제로 스크롤된 픽셀 수**를 구하고, 목록 좌표를 누적합니다. 마우스가 올라간 행의 hover 배경은 무시합니다.
 5. 전체 페이지 OCR로 `친구 428` 같은 헤더를 찾아 그 아래부터 56px 간격으로 행을 셉니다. 내 프로필, 업데이트한 친구, 생일인 친구, 즐겨찾기 구간은 건너뜁니다. 헤더의 숫자는 기대 인원으로 씁니다.
-6. 각 행에서 진한 글씨(이름)만 남기고 회색 상태메시지는 지운 뒤 OCR합니다. 행 하나만 OCR하는 방식과 한 페이지 이름을 세로로 쌓아 OCR하는 방식을 각각 4개 배율로 돌려 투표합니다. 기호가 섞인 오독(`7\`다훈`)보다 깨끗한 한글 읽기에 가산점을 줍니다.
+6. 각 행에서 진한 글씨(이름) 줄만 잘라 PaddleOCR 한국어 모델로 읽습니다. 회색 상태메시지는 들어가지 않습니다. 프로필 사진이 너무 밝아 사진 감지가 안 돼도 이름 글자가 있으면 읽습니다. (Windows OCR 경로일 때는 행별·세로로 쌓은 두 방식을 4개 배율로 돌려 투표합니다.)
 7. 끝나면(중단·오류 포함) 원래 탭과 숨김·최소화 상태로 되돌립니다.
 
 같은 이름의 두 친구는 위치가 달라서 둘 다 남고, `duplicate_friend_list` 에 들어갑니다(실제 계정에서 동명이인 3쌍 확인).
 
-### 실제 계정 측정 결과 (친구 428명, 2026-10-18)
+### 실제 계정 측정 결과 (친구 428명)
 
-| 항목 | 값 |
-|---|---|
-| 걸린 시간 | 약 48초 (웹에서 "전체 불러오기") |
-| 행 찾기 | 428 / 428 |
-| 이름을 읽음 | 405명, 그중 판독이 갈린 것(`ocr_uncertain`) 109명 |
-| 이름을 못 읽음 | 23행 (`unreadable_count`; 결과에서 빠짐) |
-| 눈에 띄는 오독 | `김`→`7\``·`71`·`기`, `ㅂㅅ진` 같은 자모 이름, `Nguyễn`→`NguyBn` |
+| 항목 | Windows OCR (2026-10-18) | **PaddleOCR (2026-10-19)** |
+|---|---|---|
+| 걸린 시간 | 약 48초 | 약 51초 (비교용으로 Windows OCR도 같이 돌린 시간) |
+| 이름을 읽음 | 405명 | **428명** |
+| 판독 불확실(`ocr_uncertain`) | 109명 | **6명** |
+| 이름을 못 읽음 | 23행 | **0행** |
+| 예 | `김민성`→`기미 서`, `김수현`→`기”• 혀`, `명선이`→`영선이`, `ㅂㅅ진`→`人 진` | 모두 맞게 읽음 |
 
-**한계:** Windows 내장 OCR은 카카오톡 목록의 작은 굵은 한글(약 12px)에 약합니다. 특히 `김`을 자주 틀립니다. 이름이 한 글자라도 틀리면 나중에 이름 검색으로 보낼 때 다른 사람이 걸리거나 아무도 안 걸릴 수 있습니다. 그래서 지금 결과는 "후보 목록"으로 보고, 사용자가 웹에서 확인한 뒤 등록하는 흐름이 전제입니다.
+PaddleOCR에서 불확실로 남은 6명은 자모나 기호뿐인 특이한 이름입니다(`ㅂㅅ진`, `ㅈㅇ`, `oo`, `Hào`, `.` 등. 그중 `ㅂㅅ진`, `Hào`, `.` 는 맞게 읽었고 확신도만 낮음). `Nguyễn` 은 `Nguyén` 으로 성조 하나가 다릅니다.
 
-정확도를 올릴 다음 후보:
-1. **Tesseract `kor`** (원본 나인톡이 쓰는 엔진): NuGet `Tesseract` + `kor.traineddata` 를 받아 같은 이름 상자로 비교. 이 PoC에서는 파일을 새로 받지 않으려고 시도하지 않았습니다.
-2. 발송 단계에서 검증: 이름으로 친구 검색 → 결과 목록을 캡처·OCR해 정확히 한 명일 때만 진행(어차피 발송에 필요한 단계).
-3. 웹 검토 화면에 `ocr_uncertain`·`unreadable_count` 를 표시하고 이름을 고칠 수 있게 하기.
+**한계:** 그래도 OCR이라 틀릴 수 있습니다. 발송은 친구 검색 결과가 정확히 1명이고 채팅방 제목이 이름과 같을 때만 보내므로, 이름이 틀리면 엉뚱한 사람에게 가지 않고 `not_found` / `room_mismatch` 로 실패합니다.
 
 ### 안전 (실제 계정에서 동작하므로)
 
@@ -177,6 +183,7 @@ NineTalkDaemon.exe --replay C:\temp\pages
 | `KakaoWindow.cs` | 카카오톡 창 찾기·상태 판정 |
 | `FriendListReader.cs` | 친구 탭 스크롤·캡처·행 추적·이름 OCR |
 | `Capture.cs`, `Ocr.cs`, `Native.cs` | PrintWindow, Windows.Media.Ocr, Win32 선언 |
+| `PaddleRec.cs`, `Models/korean/` | PaddleOCR 한국어 인식 모델(ONNX) 실행 |
 | `Probe.cs` | `--probe` 진단 |
 | `KakaoSender.cs` | 한 명 발송: 검색·결과 수·채팅방 제목 확인·입력·전송·닫기 |
 | `SendService.cs` | 발송 작업 1개 관리(간격, 중단, 결과 보관) |
