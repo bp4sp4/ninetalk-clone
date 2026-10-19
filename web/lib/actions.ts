@@ -289,7 +289,15 @@ export type SendPayload = {
   split_send_count: number | null;
 };
 
-const SEND_ERRORS = new Set(["not_found", "duplicate_name", "room_mismatch", "send_failed", "kakao_not_ready"]);
+const SEND_ERRORS = new Set([
+  "not_found",
+  "duplicate_name",
+  "room_mismatch",
+  "send_failed",
+  "kakao_not_ready",
+  "input_not_empty",
+  "dry_run",
+]);
 
 /** Loads the not-yet-sent part of a job for the PC program and marks the job as sending. */
 export async function getSendPayload(jobId: number): Promise<{ ok: true; payload: SendPayload } | { ok: false; error: string }> {

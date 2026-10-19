@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The desktop app (../desktop) runs .next/standalone/server.js.
+  output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
   experimental: {

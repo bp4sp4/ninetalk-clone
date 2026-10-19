@@ -14,6 +14,15 @@ npm run mock-daemon          # (선택) 가짜 PC 프로그램, 친구 불러오
 
 데이터는 `data/ninetalk.db`(SQLite, Node 24 내장 `node:sqlite`)와 `data/uploads/`(첨부 이미지)에 저장됩니다.
 
+### 데스크톱 앱에서 쓸 때 (환경변수)
+
+데스크톱 앱([`../desktop`](../desktop/README.md))은 `next build` 의 standalone 결과(`.next/standalone/server.js`)를 띄우면서 아래 값을 넣습니다. 웹 단독 개발(`npm run dev`)에는 필요 없습니다.
+
+| 변수 | 뜻 |
+|---|---|
+| `NINETALK_LOCAL_MODE=1` | 로그인 없음. 모든 데이터가 로컬 사용자 1명(`users.kakao_id = 'local:desktop'`) 것. `/`, `/auth/*` 는 `/dashboard` 로 보냄(`proxy.ts`), 로그아웃 버튼 숨김 |
+| `NINETALK_DATA_DIR` | DB·첨부 이미지 폴더 (없으면 `./data`) |
+
 ## 카카오 로그인 설정
 
 1. https://developers.kakao.com → 내 애플리케이션 → 애플리케이션 추가

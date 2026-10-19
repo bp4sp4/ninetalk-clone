@@ -9,6 +9,8 @@ import { cancelJob, getSendPayload, recordSendResults } from "@/lib/actions";
 import type { JobSummary } from "@/lib/data";
 import {
   DAEMON_STATE_LABELS,
+  DaemonError,
+  KAKAO_BLOCKING_STATES,
   SEND_ERROR_LABELS,
   getDaemonStatus,
   getSendResult,
@@ -25,7 +27,6 @@ const STATUS: Record<JobSummary["status"], { label: string; className: string }>
 };
 
 const POLL_MS = 1500;
-const BLOCKING_STATES = new Set(["NotRunning", "LoggedOut", "Locked"]);
 const RUN_END: Record<Exclude<SendRunState, "running">, string> = {
   done: "발송을 마쳤습니다.",
   stopped: "발송을 중단했습니다. 남은 사람은 대기 중으로 돌아갑니다.",
@@ -91,9 +92,11 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
   }, [active?.jobId]);
 
   // A job left "sending" (tab closed or reloaded mid-run): pick up the PC program's results.
+  // Not while start() runs: the job is already "sending" then, but the PC program still holds the previous
+  // run of the same job, which would look finished and put the job back to "queued" mid-send.
   const sendingJob = jobs.find((job) => job.status === "sending");
   useEffect(() => {
-    if (!sendingJob || active) return;
+    if (!sendingJob || active || starting) return;
     let canceled = false;
     getSendResult()
       .then(async (result) => {
@@ -108,7 +111,7 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
       canceled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendingJob?.id]);
+  }, [sendingJob?.id, starting]);
 
   const start = async (job: JobSummary) => {
     const remaining = job.total - job.sent - job.failed;
@@ -132,7 +135,7 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
       if (status !== "Ready") {
         setNotice({
           tone: "error",
-          text: BLOCKING_STATES.has(status)
+          text: KAKAO_BLOCKING_STATES.has(status)
             ? `카카오톡이 준비되지 않았습니다: ${DAEMON_STATE_LABELS[status] ?? status}`
             : `PC 프로그램이 다른 작업 중입니다: ${DAEMON_STATE_LABELS[status] ?? status}`,
         });
@@ -149,7 +152,9 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
       } catch (error) {
         // getSendPayload marked the job as sending; put it back in the queue.
         await recordSendResults(job.id, [], true);
-        setNotice({ tone: "error", text: `PC 프로그램이 발송을 시작하지 못했습니다. ${error instanceof Error ? error.message : ""}` });
+        // Only the PC program's own answers are worded for the user; network errors ("Failed to fetch") are not.
+        const reason = error instanceof DaemonError ? error.message : "PC 프로그램이 켜져 있는지 확인해 주세요.";
+        setNotice({ tone: "error", text: `PC 프로그램이 발송을 시작하지 못했습니다. ${reason}` });
         return;
       }
       follow(job.id, loaded.payload.recipients.length);
@@ -168,6 +173,8 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
     if (!job) return;
     offered.current = true;
     router.replace("/jobs", { scroll: false });
+    // The PC program cannot send images yet; the list already says so, so do not offer a send that will fail.
+    if (job.fileCount > 0) return;
     // After the page has painted, so the list is visible behind the confirm dialog.
     setTimeout(() => start(job), 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps

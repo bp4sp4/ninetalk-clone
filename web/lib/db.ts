@@ -3,7 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-export const DATA_DIR = path.join(process.cwd(), "data");
+// The desktop app points this at its user-data folder; the web dev server keeps using ./data.
+export const DATA_DIR = process.env.NINETALK_DATA_DIR || path.join(process.cwd(), "data");
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
