@@ -119,7 +119,7 @@ function startWebServer() {
     exited = true;
     log("web server exited", code);
     if (!quitting) {
-      dialog.showErrorBox("단체톡 관리", `내부 서버가 종료되었습니다 (코드 ${code}). 앱을 다시 실행해 주세요.`);
+      dialog.showErrorBox("한평생톡", `내부 서버가 종료되었습니다 (코드 ${code}). 앱을 다시 실행해 주세요.`);
       // Nothing can record send results without the server; the PC program keeps its last results for next time.
       allowQuit = true;
       app.quit();
@@ -153,7 +153,7 @@ async function startDaemon() {
   if (found === "other") {
     log(`${DAEMON_URL} is held by another program; not starting the PC program`);
     dialog.showErrorBox(
-      "단체톡 관리",
+      "한평생톡",
       "PC 프로그램 포트(47301)를 다른 프로그램이 쓰고 있어 PC 프로그램을 시작하지 못했습니다.\n친구 불러오기와 발송은 쓸 수 없습니다.",
     );
     return;
@@ -233,7 +233,8 @@ function createWindow() {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: "단체톡 관리",
+    title: "한평생톡",
+    icon: path.join(__dirname, "icons", "icon.png"),
     autoHideMenuBar: true,
     // backgroundThrottling off: the 발송 내역 page must keep polling and recording results while the window
     // is covered by other apps (a send can run for a long time in the background).
@@ -257,7 +258,7 @@ function createWindow() {
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 /* ERR_ABORTED: a navigation replaced this one */ || quitting) return;
     if (retries++ >= 5) {
-      dialog.showErrorBox("단체톡 관리", "화면을 불러오지 못했습니다. 앱을 다시 실행해 주세요.");
+      dialog.showErrorBox("한평생톡", "화면을 불러오지 못했습니다. 앱을 다시 실행해 주세요.");
       return;
     }
     setTimeout(() => mainWindow?.loadURL(isAppUrl(url) ? url : `${APP_ORIGIN}/dashboard`), 1000);
@@ -310,7 +311,7 @@ function confirmQuitWhileSending() {
       buttons: ["보내던 사람까지 보내고 종료", "계속 보내기"],
       defaultId: 1,
       cancelId: 1,
-      title: "단체톡 관리",
+      title: "한평생톡",
       message: "메시지를 보내는 중입니다.",
       detail: "종료하면 지금 보내던 사람까지만 보내고 멈춘 뒤, 결과를 발송 내역에 기록하고 앱을 닫습니다.",
     });
@@ -387,12 +388,12 @@ async function main() {
   await app.whenReady();
 
   if (!fs.existsSync(path.join(WEB_DIR, "server.js"))) {
-    dialog.showErrorBox("단체톡 관리", `웹 빌드를 찾지 못했습니다: ${WEB_DIR}\n\ndesktop 폴더에서 npm run build:web 을 먼저 실행하세요.`);
+    dialog.showErrorBox("한평생톡", `웹 빌드를 찾지 못했습니다: ${WEB_DIR}\n\ndesktop 폴더에서 npm run build:web 을 먼저 실행하세요.`);
     app.quit();
     return;
   }
   if (await portInUse(PORT)) {
-    dialog.showErrorBox("단체톡 관리", `${PORT} 포트를 다른 프로그램이 쓰고 있어 시작할 수 없습니다.`);
+    dialog.showErrorBox("한평생톡", `${PORT} 포트를 다른 프로그램이 쓰고 있어 시작할 수 없습니다.`);
     app.quit();
     return;
   }
@@ -401,7 +402,7 @@ async function main() {
   await startDaemon();
 
   if (!(await waitForServer(`${APP_ORIGIN}/dashboard`, 30000))) {
-    dialog.showErrorBox("단체톡 관리", "내부 서버가 30초 안에 시작되지 않았습니다.");
+    dialog.showErrorBox("한평생톡", "내부 서버가 30초 안에 시작되지 않았습니다.");
     app.quit();
     return;
   }

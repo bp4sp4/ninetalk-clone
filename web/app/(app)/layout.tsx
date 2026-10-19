@@ -40,7 +40,7 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
     <div className="min-h-screen md:flex">
       <aside className="border-b border-border bg-surface p-4 md:sticky md:top-0 md:flex md:h-screen md:w-60 md:shrink-0 md:flex-col md:gap-6 md:border-r md:border-b-0">
         <div className="mb-3 flex items-center justify-between md:mb-0 md:block">
-          <p className="text-lg font-bold">💬 단체톡 관리</p>
+          <p className="text-lg font-bold">💬 한평생톡</p>
         </div>
         <NavLinks />
         <div className="mt-3 space-y-3 md:mt-auto">

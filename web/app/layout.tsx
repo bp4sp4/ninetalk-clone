@@ -9,7 +9,7 @@ const notoSansKr = Noto_Sans_KR({
 });
 
 export const metadata: Metadata = {
-  title: "단체톡 관리",
+  title: "한평생톡",
   description: "카카오톡 친구 그룹을 관리하고 단체 메시지를 작성합니다.",
 };
 

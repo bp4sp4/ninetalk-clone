@@ -27,7 +27,7 @@ export default function LoginPage({ searchParams }: PageProps<"/">) {
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-kakao text-2xl" aria-hidden>
             💬
           </div>
-          <h1 className="text-2xl font-bold">단체톡 관리</h1>
+          <h1 className="text-2xl font-bold">한평생톡</h1>
           <p className="text-sm text-muted">친구 그룹을 정리하고, 이름이 들어간 메시지를 한 번에 준비하세요.</p>
         </div>
 

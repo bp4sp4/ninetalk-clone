@@ -31,8 +31,9 @@ sealed class TrayContext : ApplicationContext
 
         icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
-            Text = "NineTalk 데몬",
+            // The app icon embedded in the exe (ApplicationIcon in the .csproj), so the tray shows the brand.
+            Icon = TrayIcon(),
+            Text = "한평생톡",
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -54,7 +55,7 @@ sealed class TrayContext : ApplicationContext
         catch (Exception ex)
         {
             MessageBox.Show($"localhost:{HttpServer.Port} 포트를 열지 못했습니다.\n다른 프로그램(mock-daemon 등)이 쓰고 있는지 확인하세요.\n\n{ex.Message}",
-                "NineTalk 데몬", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                "한평생톡", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         timer.Tick += (_, _) =>
@@ -64,6 +65,12 @@ sealed class TrayContext : ApplicationContext
         };
         timer.Start();
         RefreshStatus();
+    }
+
+    static Icon TrayIcon()
+    {
+        try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application; }
+        catch { return SystemIcons.Application; }
     }
 
     void RefreshStatus()
@@ -81,7 +88,7 @@ sealed class TrayContext : ApplicationContext
             _ => status,
         };
         statusItem.Text = server is null ? "서버 시작 실패" : $"{label} · localhost:{HttpServer.Port}";
-        icon.Text = $"NineTalk 데몬 - {label}";
+        icon.Text = $"한평생톡 - {label}";
     }
 
     protected override void ExitThreadCore()

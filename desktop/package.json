@@ -1,9 +1,9 @@
 {
-  "name": "ninetalk-desktop",
+  "name": "hanpyeongsaengtok-desktop",
   "version": "0.1.0",
-  "productName": "NineTalkClone",
+  "productName": "한평생톡",
   "private": true,
-  "description": "단체톡 관리 데스크톱 앱 (Next 대시보드 + Windows PC 프로그램)",
+  "description": "한평생톡 — 단체 카카오톡 발송 데스크톱 앱 (Next 대시보드 + PC 프로그램)",
   "main": "main.js",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
@@ -19,16 +19,19 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.ninetalkclone.desktop",
+    "appId": "com.hanpyeongsaengtok.desktop",
+    "icon": "icons/icon.png",
     "directories": {
       "output": "dist"
     },
     "files": [
       "main.js",
-      "package.json"
+      "package.json",
+      "icons/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "icons/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -43,12 +46,13 @@
           ]
         }
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "icons/icon.png"
     },
     "afterPack": "scripts/after-pack.cjs",
     "dmg": {
       "title": "${productName} ${version}"
     },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+    "artifactName": "HanpyeongsaengTok-${version}-${os}-${arch}.${ext}"
   }
 }

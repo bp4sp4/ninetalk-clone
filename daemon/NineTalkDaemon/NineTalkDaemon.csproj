@@ -12,6 +12,8 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <Version>0.1.0</Version>
     <AssemblyName>NineTalkDaemon</AssemblyName>
+    <!-- 한평생톡 brand icon, embedded in the exe and shown in the system tray. -->
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
