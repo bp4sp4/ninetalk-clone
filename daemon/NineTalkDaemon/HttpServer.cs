@@ -202,14 +202,16 @@ sealed class HttpServer : IDisposable
             return;
         }
         var refused = sender.TryStart(body.JobId, recipients.Select(r => new SendService.Recipient(r.Id, r.Name!.Trim(), r.Text)).ToList(),
-            body.SpeedRate ?? 3, body.SplitSendCount);
+            SendService.Settings.From(body.IntervalMs, body.SpeedRate, body.SplitSendCount, body.SendMode));
         if (refused is null) await Send(res, origin, 202, new { ok = true });
         else await Send(res, origin, 409, new { ok = false, status = refused });
     }
 
     sealed record SendRecipient(long Id, string? Name, string? Text);
     sealed record SendImage(string? Name, string? Mime, string? DataBase64);
-    sealed record SendRequest(long JobId, List<SendRecipient>? Recipients, List<SendImage>? Images, bool ImageFirst, int? SpeedRate, int? SplitSendCount);
+    sealed record SendRequest(
+        long JobId, List<SendRecipient>? Recipients, List<SendImage>? Images, bool ImageFirst,
+        int? SpeedRate, int? SplitSendCount, int? IntervalMs, string? SendMode);
 
     static async Task Send(HttpListenerResponse res, string? origin, int code, object? body)
     {

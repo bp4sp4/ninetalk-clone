@@ -41,9 +41,10 @@ function finishSync(extra = {}) {
 // refused (images are not supported yet). Every 7th recipient fails as not_found, to exercise failures.
 let sendJob = { job_id: null, state: "done", results: [], timer: null, stopRequested: false };
 
-function startSendJob({ job_id, recipients }) {
+function startSendJob({ job_id, recipients, interval_ms, split_send_count, send_mode }) {
   sendJob = { job_id, state: "running", results: [], timer: null, stopRequested: false };
   state.status = "SendMessage";
+  console.log(`send job ${job_id}: ${recipients.length} recipients, ${interval_ms}ms, ${send_mode} every ${split_send_count}`);
   let index = 0;
   sendJob.timer = setInterval(() => {
     const recipient = recipients[index++];

@@ -36,9 +36,11 @@ const ALLOWED_ORIGINS = new Set(
 // Only these Host headers, so a rebinding DNS name cannot reach the API from a web page.
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 
-// Pause after each recipient by speed_rate 1 (slowest) .. 5 (fastest), plus a random 0-3s; same as Windows.
-const PAUSE_SECONDS = [0, 20, 14, 10, 7, 5];
-const SPLIT_REST_SECONDS = 90;
+// Pause after each recipient: interval_ms (200~2000), or for older dashboards the 1~5 speed_rate.
+// "restart" mode (restart KakaoTalk every split_send_count) is Windows-only for now; here it just keeps going.
+const LEGACY_INTERVAL_MS = [800, 2000, 1200, 800, 400, 200];
+const intervalFor = (interval_ms, speed_rate) =>
+  Math.min(2000, Math.max(200, Number(interval_ms) || LEGACY_INTERVAL_MS[Math.min(5, Math.max(1, Number(speed_rate) || 3))]));
 
 function log(...args) {
   console.log(new Date().toLocaleTimeString("ko-KR"), ...args);
@@ -188,12 +190,13 @@ function pause(seconds) {
   });
 }
 
-async function runSend({ job_id, recipients, speed_rate, split_send_count }) {
+async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode }) {
   busy = "SendMessage";
   job = { job_id: job_id ?? null, state: "running", results: [], stopRequested: false, wake: null };
   saveJob();
-  const speed = Math.min(5, Math.max(1, Number(speed_rate) || 3));
-  log(`발송 시작: ${recipients.length}명${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
+  const intervalMs = intervalFor(interval_ms, speed_rate);
+  log(`발송 시작: ${recipients.length}명, ${intervalMs}ms 간격${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
+  if (send_mode === "restart") log("맥에서는 카카오톡 재시작을 아직 하지 않습니다. 재시작 없이 계속 보냅니다.");
   let finalState = "done";
   let lastCause = null;
   let sameFailures = 0;
@@ -241,9 +244,7 @@ async function runSend({ job_id, recipients, speed_rate, split_send_count }) {
         break;
       }
       if (i === recipients.length - 1) break;
-      let seconds = PAUSE_SECONDS[speed] + Math.random() * 3;
-      if (split_send_count > 0 && (i + 1) % split_send_count === 0) seconds += SPLIT_REST_SECONDS;
-      await pause(seconds);
+      await pause(intervalMs / 1000);
     }
     if (job.stopRequested && finalState === "done" && job.results.length < recipients.length) finalState = "stopped";
   } finally {

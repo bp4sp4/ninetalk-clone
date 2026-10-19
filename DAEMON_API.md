@@ -85,16 +85,30 @@ PC 카카오톡 친구 탭에서 친구 이름을 읽기 시작합니다. 바로
   ],
   "images": [{ "name": "poster.jpg", "mime": "image/jpeg", "data_base64": "..." }],
   "image_first": false,
-  "speed_rate": 3,
-  "split_send_count": 50
+  "interval_ms": 800,
+  "split_send_count": 50,
+  "send_mode": "restart",
+  "speed_rate": 3
 }
 ```
 
 - `id` 는 웹의 수신자 행 id 입니다. 결과를 돌려줄 때 그대로 씁니다.
 - `text` 는 웹에서 이미 이름·말투가 반영된 최종 문구입니다. 비어 있으면 이미지만 보냅니다.
 - `images` 는 0~5장, 수신자마다 같은 이미지를 보냅니다. `image_first` 가 `true` 면 이미지를 먼저 보냅니다.
-- `speed_rate` 1(아주 느리게) ~ 5(아주 빠르게): 한 명 보내고 다음 사람까지 쉬는 간격. 값별 실제 간격은 데몬이 정하고, 빠르게라도 사람이 보내는 속도보다 빠르지 않게 하세요.
-- `split_send_count` (`number | null`): N명마다 더 길게 쉽니다(데몬이 정한 휴식 시간).
+- 발송 속도 (웹 작성 화면의 느리게 / 보통 / 빠르게 / 사용자화):
+
+  | 설정 | `interval_ms` | `split_send_count` | `send_mode` |
+  |---|---|---|---|
+  | 느리게 | 1200 | 30 | `restart` |
+  | 보통 (추천) | 800 | 50 | `restart` |
+  | 빠르게 | 400 | 100 | `restart` |
+  | 사용자화 | 200~2000 (100 단위) | 1~999 | `restart` 또는 `normal` |
+
+- `interval_ms`: 한 명 보내고 다음 사람까지 쉬는 시간(ms). 한 명 보내는 동작 자체(검색·채팅방 열기·전송·닫기)에 걸리는 몇 초는 따로입니다.
+- `send_mode`: `restart`(재시작 발송)면 `split_send_count` 명마다 PC 카카오톡을 껐다 켭니다(카카오톡 자동 로그인 필요). 다시 로그인 상태가 되지 않으면 작업은 `failed` 로 끝나고 남은 사람은 보내지 않습니다. `normal`(일반 발송)이면 재시작 없이 계속 보냅니다.
+- `split_send_count` (`number | null`): 재시작 주기(명). `normal` 에서는 쓰지 않습니다.
+- `speed_rate` 1~5: 예전 형식. `interval_ms` 를 모르는 데몬을 위해 같이 보냅니다(1=2000, 2=1200, 3=800, 4=400, 5=200ms에 해당). 데몬은 `interval_ms` 가 있으면 그것을 씁니다.
+- 맥 PC 프로그램은 아직 카카오톡 재시작을 하지 않습니다(`restart` 여도 재시작 없이 계속).
 - 응답: `202 { "ok": true }`. 다른 작업 중이거나 카카오톡이 준비되지 않았으면 `409 { "ok": false, "status": "<현재 status>" }`.
 - 시작하면 `/status` 가 `SendMessage` 가 되고, `current_sent_order`(지금까지 처리한 수)를 넣어 줍니다. 끝나거나 중단되면 `Ready`.
 

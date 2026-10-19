@@ -29,6 +29,23 @@ static class Program
             return;
         }
 
+        // --restart-test: quits and relaunches PC KakaoTalk the way "재시작 발송" does, then waits for login.
+        // Sends nothing. Log: %LOCALAPPDATA%\NineTalkDaemon\restart-test.log
+        if (args.Length > 0 && args[0] == "--restart-test")
+        {
+            AttachConsole(-1);
+            var log = Path.Combine(Path.GetDirectoryName(FriendSync.LogPath)!, "restart-test.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(log)!);
+            using var file = new StreamWriter(log, append: false) { AutoFlush = true };
+            void Print(string s) { Console.WriteLine(s); file.WriteLine($"{DateTime.Now:HH:mm:ss} {s}"); }
+            var started = DateTime.Now;
+            var window = KakaoRestart.RestartAsync(Print).GetAwaiter().GetResult();
+            Print(window is null
+                ? "결과: 실패"
+                : $"결과: 로그인 상태로 다시 켜짐 ({(DateTime.Now - started).TotalSeconds:F0}초, 창 표시={window.MainShown})");
+            return;
+        }
+
         // --parent-pid <pid>: started by the desktop app (desktop/main.js); exit when it exits.
         var parentIndex = Array.IndexOf(args, "--parent-pid");
         int? parentPid = parentIndex >= 0 && parentIndex + 1 < args.Length && int.TryParse(args[parentIndex + 1], out var pid) ? pid : null;

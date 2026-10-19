@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS send_jobs (
   talkdown_text    TEXT NOT NULL,
   speed_rate       INTEGER NOT NULL,
   split_send_count INTEGER,
+  interval_ms      INTEGER,
+  send_mode        TEXT,
   image_first      INTEGER NOT NULL DEFAULT 0,
   status           TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sending', 'done', 'canceled')),
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
@@ -77,7 +79,7 @@ CREATE TABLE IF NOT EXISTS send_job_files (
 );
 `;
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const globalForDb = globalThis as unknown as { ninetalkDb?: DatabaseSync; ninetalkSchema?: number };
 
@@ -86,6 +88,14 @@ function migrate(conn: DatabaseSync) {
   const columns = conn.prepare("PRAGMA table_info(send_job_recipients)").all() as { name: string }[];
   if (!columns.some((column) => column.name === "error")) {
     conn.exec("ALTER TABLE send_job_recipients ADD COLUMN error TEXT");
+  }
+  // Send speed as interval + KakaoTalk restart cycle (lib/send-speed.ts). Old jobs keep NULL here.
+  const jobColumns = conn.prepare("PRAGMA table_info(send_jobs)").all() as { name: string }[];
+  if (!jobColumns.some((column) => column.name === "interval_ms")) {
+    conn.exec("ALTER TABLE send_jobs ADD COLUMN interval_ms INTEGER");
+  }
+  if (!jobColumns.some((column) => column.name === "send_mode")) {
+    conn.exec("ALTER TABLE send_jobs ADD COLUMN send_mode TEXT");
   }
 }
 

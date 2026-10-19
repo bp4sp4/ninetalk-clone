@@ -6,6 +6,15 @@ import { refresh } from "next/cache";
 import { requireUser } from "./auth";
 import { DATA_DIR, db, transaction } from "./db";
 import { NAME_TOKEN, renderMessage } from "./message";
+import {
+  LEGACY_INTERVAL_MS,
+  SPEED_PRESETS,
+  customSettingError,
+  isSpeedPreset,
+  speedRateFor,
+  type SendMode,
+  type SpeedSetting,
+} from "./send-speed";
 import type { SenderType } from "./data";
 
 /** `id`: the row an action created, when the caller needs it (e.g. the new send job). */
@@ -206,9 +215,21 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
 
   const honorific = String(formData.get("honorific") ?? "").trim();
   const talkdown = String(formData.get("talkdown") ?? "").trim();
-  const speedRate = Number(formData.get("speedRate") ?? 3);
-  const splitRaw = String(formData.get("splitSendCount") ?? "").trim();
-  const splitSendCount = splitRaw ? Number(splitRaw) : null;
+  // Speed: a preset is taken from the server's own table; only "custom" uses the submitted numbers.
+  const preset = formData.get("speedPreset") ?? "normal";
+  if (!isSpeedPreset(preset)) return { ok: false, error: "발송 속도 설정이 올바르지 않습니다." };
+  const speed: SpeedSetting =
+    preset === "custom"
+      ? {
+          intervalMs: Number(formData.get("intervalMs")),
+          splitCount: Number(formData.get("splitSendCount")),
+          mode: formData.get("sendMode") === "normal" ? "normal" : "restart",
+        }
+      : SPEED_PRESETS[preset];
+  if (preset === "custom") {
+    const error = customSettingError(speed);
+    if (error) return { ok: false, error };
+  }
   const imageFirst = formData.get("imageFirst") === "on";
   const groupIds = ownedIds("groups", user.id, formData.getAll("groupIds").map(Number));
   const friendIds = ownedIds("friends", user.id, formData.getAll("friendIds").map(Number));
@@ -216,10 +237,6 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
 
   if (!honorific && files.length === 0) return { ok: false, error: "메시지 내용이나 이미지를 넣어 주세요." };
   if (honorific.length > 2000 || talkdown.length > 2000) return { ok: false, error: "메시지는 2000자까지 입력할 수 있습니다." };
-  if (!Number.isInteger(speedRate) || speedRate < 1 || speedRate > 5) return { ok: false, error: "발송 속도는 1~5 사이여야 합니다." };
-  if (splitSendCount !== null && (!Number.isInteger(splitSendCount) || splitSendCount < 1 || splitSendCount > 1000)) {
-    return { ok: false, error: "나눠 보내기 인원은 1~1000 사이 숫자여야 합니다." };
-  }
   if (files.length > MAX_FILES) return { ok: false, error: `이미지는 ${MAX_FILES}장까지 첨부할 수 있습니다.` };
   for (const file of files) {
     if (!IMAGE_TYPES.has(file.type)) return { ok: false, error: `이미지 파일만 첨부할 수 있습니다: ${file.name}` };
@@ -248,10 +265,20 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
   const jobId = transaction(() => {
     const { id } = db
       .prepare(
-        `INSERT INTO send_jobs (user_id, title, honorific_text, talkdown_text, speed_rate, split_send_count, image_first)
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO send_jobs (user_id, title, honorific_text, talkdown_text, speed_rate, split_send_count, interval_ms, send_mode, image_first)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(user.id, firstLine, honorific, talkdown, speedRate, splitSendCount, imageFirst ? 1 : 0) as { id: number };
+      .get(
+        user.id,
+        firstLine,
+        honorific,
+        talkdown,
+        speedRateFor(speed.intervalMs),
+        speed.splitCount,
+        speed.intervalMs,
+        speed.mode,
+        imageFirst ? 1 : 0,
+      ) as { id: number };
 
     const insert = db.prepare(
       "INSERT INTO send_job_recipients (job_id, friend_id, name, sender_type, text) VALUES (?, ?, ?, ?, ?)",
@@ -285,8 +312,14 @@ export type SendPayload = {
   recipients: { id: number; name: string; text: string }[];
   images: { name: string; mime: string; data_base64: string }[];
   image_first: boolean;
+  /** Old 1~5 speed, still sent for PC programs that do not read interval_ms. */
   speed_rate: number;
+  /** Recipients between KakaoTalk restarts ("restart" mode); null for none. */
   split_send_count: number | null;
+  /** Pause after each recipient, in milliseconds. */
+  interval_ms: number;
+  /** "restart": restart PC KakaoTalk every split_send_count recipients; "normal": never. */
+  send_mode: SendMode;
 };
 
 const SEND_ERRORS = new Set([
@@ -303,9 +336,19 @@ const SEND_ERRORS = new Set([
 export async function getSendPayload(jobId: number): Promise<{ ok: true; payload: SendPayload } | { ok: false; error: string }> {
   const user = await requireUser();
   const job = db
-    .prepare("SELECT id, status, speed_rate, split_send_count, image_first FROM send_jobs WHERE id = ? AND user_id = ?")
+    .prepare(
+      "SELECT id, status, speed_rate, split_send_count, interval_ms, send_mode, image_first FROM send_jobs WHERE id = ? AND user_id = ?",
+    )
     .get(jobId, user.id) as
-    | { id: number; status: string; speed_rate: number; split_send_count: number | null; image_first: number }
+    | {
+        id: number;
+        status: string;
+        speed_rate: number;
+        split_send_count: number | null;
+        interval_ms: number | null;
+        send_mode: string | null;
+        image_first: number;
+      }
     | undefined;
   if (!job) return { ok: false, error: "발송 요청을 찾을 수 없습니다." };
   if (job.status !== "queued" && job.status !== "sending") return { ok: false, error: "대기 중인 요청만 보낼 수 있습니다." };
@@ -339,6 +382,9 @@ export async function getSendPayload(jobId: number): Promise<{ ok: true; payload
       image_first: job.image_first === 1,
       speed_rate: job.speed_rate,
       split_send_count: job.split_send_count,
+      // Jobs saved before interval_ms existed: interval from the old 1~5 speed, and no restarts.
+      interval_ms: job.interval_ms ?? LEGACY_INTERVAL_MS[job.speed_rate] ?? 800,
+      send_mode: job.send_mode === "restart" ? "restart" : "normal",
     },
   };
 }

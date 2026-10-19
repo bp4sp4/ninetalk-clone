@@ -8,10 +8,27 @@ import { useAction } from "@/components/use-action";
 import { createSendJob } from "@/lib/actions";
 import type { Friend, Group, SenderType } from "@/lib/data";
 import { NAME_TOKEN, renderMessage } from "@/lib/message";
+import {
+  CUSTOM_LIMITS,
+  SPEED_PRESETS,
+  customSettingError,
+  describeSetting,
+  formatInterval,
+  type SendMode,
+  type SpeedPreset,
+  type SpeedSetting,
+} from "@/lib/send-speed";
 
 const MAX_FILES = 5;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const SPEED_LABELS = ["", "아주 느리게", "느리게", "보통", "빠르게", "아주 빠르게"];
+const SPEED_OPTIONS: { key: SpeedPreset; label: string; detail: string }[] = [
+  ...(Object.entries(SPEED_PRESETS) as [Exclude<SpeedPreset, "custom">, (typeof SPEED_PRESETS)["slow"]][]).map(([key, preset]) => ({
+    key,
+    label: preset.label,
+    detail: `${preset.intervalMs}ms · ${preset.splitCount}명마다`,
+  })),
+  { key: "custom", label: "사용자화", detail: "간격·횟수·방식 직접" },
+];
 const AD_PREFIX = "(광고) ";
 const AD_FOOTER = "\n\n무료 수신거부: 이 채팅방에 '수신거부'라고 보내 주세요.";
 
@@ -32,8 +49,10 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
 
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [imageFirst, setImageFirst] = useState(false);
-  const [speedRate, setSpeedRate] = useState(3);
-  const [splitSendCount, setSplitSendCount] = useState("");
+  const [speedPreset, setSpeedPreset] = useState<SpeedPreset>("normal");
+  const [customInterval, setCustomInterval] = useState(800);
+  const [customSplit, setCustomSplit] = useState("50");
+  const [customMode, setCustomMode] = useState<SendMode>("restart");
   const [previewId, setPreviewId] = useState<number | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
@@ -105,8 +124,12 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
     const form = new FormData();
     form.set("honorific", honorific);
     form.set("talkdown", talkdown);
-    form.set("speedRate", String(speedRate));
-    form.set("splitSendCount", splitSendCount);
+    form.set("speedPreset", speedPreset);
+    if (speedPreset === "custom") {
+      form.set("intervalMs", String(customInterval));
+      form.set("splitSendCount", customSplit);
+      form.set("sendMode", customMode);
+    }
     if (imageFirst) form.set("imageFirst", "on");
     groupIds.forEach((id) => form.append("groupIds", String(id)));
     extraIds.forEach((id) => form.append("friendIds", String(id)));
@@ -130,7 +153,14 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
     );
   };
 
-  const canSubmit = recipients.length > 0 && (honorific.trim() || attachments.length > 0) && !pending;
+  // The effective speed; null while a custom setting is out of range.
+  const speedSetting: SpeedSetting | null = (() => {
+    if (speedPreset !== "custom") return SPEED_PRESETS[speedPreset];
+    const custom = { intervalMs: customInterval, splitCount: Number(customSplit), mode: customMode };
+    return customSettingError(custom) ? null : custom;
+  })();
+
+  const canSubmit = recipients.length > 0 && (honorific.trim() || attachments.length > 0) && speedSetting !== null && !pending;
 
   return (
     <div>
@@ -307,28 +337,72 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
 
           <section className="card p-5">
             <h2 className="mb-3 font-bold">4. 발송 설정</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm">
-                <span className="mb-1 flex justify-between">
-                  발송 속도 <span className="text-muted">{SPEED_LABELS[speedRate]}</span>
-                </span>
-                <input type="range" min={1} max={5} value={speedRate} onChange={(event) => setSpeedRate(Number(event.target.value))} className="w-full" />
-                <span className="mt-1 block text-xs text-muted">느릴수록 카카오 계정 제한 위험이 줄어듭니다.</span>
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block">나눠 보내기 (선택)</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    className="input w-28"
-                    inputMode="numeric"
-                    placeholder="예: 50"
-                    value={splitSendCount}
-                    onChange={(event) => setSplitSendCount(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                  />
-                  <span className="text-muted">명씩 끊어서</span>
-                </div>
-              </label>
+            <div className="grid gap-2 sm:grid-cols-4" role="radiogroup" aria-label="발송 속도">
+              {SPEED_OPTIONS.map(({ key, label, detail }) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="radio"
+                  aria-checked={speedPreset === key}
+                  onClick={() => setSpeedPreset(key)}
+                  className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                    speedPreset === key ? "border-accent bg-accent/10 font-medium" : "border-border hover:bg-black/[0.03]"
+                  }`}
+                >
+                  <span className="block">{label}</span>
+                  <span className="mt-0.5 block text-xs font-normal text-muted">{detail}</span>
+                </button>
+              ))}
             </div>
+
+            {speedPreset === "custom" && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <label className="block text-sm sm:col-span-2">
+                  <span className="mb-1 flex justify-between">
+                    발송 간격 <span className="text-muted">{customInterval}ms ({formatInterval(customInterval)})</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={CUSTOM_LIMITS.minIntervalMs}
+                    max={CUSTOM_LIMITS.maxIntervalMs}
+                    step={CUSTOM_LIMITS.stepMs}
+                    value={customInterval}
+                    onChange={(event) => setCustomInterval(Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block">분할 발송 횟수</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="input max-w-24"
+                      inputMode="numeric"
+                      value={customSplit}
+                      onChange={(event) => setCustomSplit(event.target.value.replace(/\D/g, "").slice(0, 3))}
+                      aria-label="분할 발송 횟수 (1~999)"
+                    />
+                    <span className="shrink-0 text-muted">명마다</span>
+                  </div>
+                </label>
+                <fieldset className="text-sm">
+                  <legend className="mb-1">발송 방식</legend>
+                  <label className="mr-4 inline-flex items-center gap-1.5">
+                    <input type="radio" name="sendMode" checked={customMode === "restart"} onChange={() => setCustomMode("restart")} />
+                    재시작 발송
+                  </label>
+                  <label className="inline-flex items-center gap-1.5">
+                    <input type="radio" name="sendMode" checked={customMode === "normal"} onChange={() => setCustomMode("normal")} />
+                    일반 발송
+                  </label>
+                </fieldset>
+              </div>
+            )}
+
+            <p className="mt-3 text-xs text-muted">
+              {speedSetting ? describeSetting(speedSetting) : "분할 발송 횟수는 1~999 사이로 넣어 주세요."}
+              {speedSetting?.mode === "restart" && " · 재시작하려면 PC 카카오톡 자동 로그인이 켜져 있어야 합니다."}
+              <span className="mt-0.5 block">빠를수록 카카오 계정 제한 위험이 커집니다.</span>
+            </p>
           </section>
         </div>
 
