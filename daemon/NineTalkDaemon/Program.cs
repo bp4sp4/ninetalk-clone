@@ -29,7 +29,10 @@ static class Program
             return;
         }
 
-        Application.Run(new TrayContext());
+        // --parent-pid <pid>: started by the desktop app (desktop/main.js); exit when it exits.
+        var parentIndex = Array.IndexOf(args, "--parent-pid");
+        int? parentPid = parentIndex >= 0 && parentIndex + 1 < args.Length && int.TryParse(args[parentIndex + 1], out var pid) ? pid : null;
+        Application.Run(new TrayContext(parentPid));
     }
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool AttachConsole(int pid);

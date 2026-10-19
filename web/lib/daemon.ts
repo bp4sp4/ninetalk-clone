@@ -2,7 +2,20 @@
 
 export const DAEMON_URL = process.env.NEXT_PUBLIC_DAEMON_URL ?? "http://localhost:47301";
 
-export type DaemonState = "Ready" | "GetKaoFriends" | "SendMessage" | "NotRunning" | "LoggedOut" | "Locked";
+/**
+ * NoAccessibility: Mac only, the PC program has not been allowed to use Accessibility (System Settings).
+ * DaemonBroken: Mac only, the PC program's KakaoTalk helper is missing.
+ */
+export type DaemonState =
+  | "Ready"
+  | "GetKaoFriends"
+  | "SendMessage"
+  | "NotRunning"
+  | "LoggedOut"
+  | "Locked"
+  | "NoAccessibility"
+  | "DaemonBroken"
+  | "ShuttingDown";
 
 export type DaemonStatus = {
   status: DaemonState | string;
@@ -26,6 +39,9 @@ export type KakaoFriendList = {
   unreadable_count?: number;
 };
 
+/** States where KakaoTalk (or the PC program's permissions) must be fixed before reading or sending. */
+export const KAKAO_BLOCKING_STATES = new Set(["NotRunning", "LoggedOut", "Locked", "NoAccessibility", "DaemonBroken"]);
+
 export const DAEMON_STATE_LABELS: Record<string, string> = {
   Ready: "대기 중",
   GetKaoFriends: "친구 불러오는 중",
@@ -33,7 +49,13 @@ export const DAEMON_STATE_LABELS: Record<string, string> = {
   NotRunning: "카카오톡 꺼짐",
   LoggedOut: "카카오톡 로그아웃",
   Locked: "카카오톡 잠금",
+  NoAccessibility: "손쉬운 사용 권한 필요",
+  DaemonBroken: "PC 프로그램 설치 문제 (다시 설치 필요)",
+  ShuttingDown: "PC 프로그램 종료 중",
 };
+
+/** A refusal or error answered by the PC program itself; its message is written for the user. */
+export class DaemonError extends Error {}
 
 async function call<T>(path: string, init?: RequestInit, timeoutMs = 4000): Promise<T> {
   const res = await fetch(`${DAEMON_URL}${path}`, {
@@ -42,7 +64,13 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs = 4000): Prom
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!res.ok) throw new Error(`PC 프로그램 응답 오류 (${res.status})`);
+  if (res.status === 409) {
+    // Busy or not ready: the body says which state, so say that instead of a bare status code.
+    const body = (await res.json().catch(() => null)) as { status?: string } | null;
+    const state = body?.status;
+    if (state) throw new DaemonError(`PC 프로그램이 지금 받을 수 없습니다: ${DAEMON_STATE_LABELS[state] ?? state}`);
+  }
+  if (!res.ok) throw new DaemonError(`PC 프로그램 응답 오류 (${res.status})`);
   return (await res.json()) as T;
 }
 
@@ -70,6 +98,8 @@ export const SEND_ERROR_LABELS: Record<string, string> = {
   room_mismatch: "채팅방 이름이 달라 보내지 않음",
   send_failed: "전송 실패",
   kakao_not_ready: "카카오톡 준비 안 됨",
+  input_not_empty: "채팅방 입력창에 쓰던 글이 있어 보내지 않음",
+  dry_run: "시험 실행(dry-run)이라 실제로 보내지 않음",
 };
 
 /** Starts sending; the payload comes from the getSendPayload server action. */

@@ -8,6 +8,8 @@ import { addFriends } from "@/lib/actions";
 import type { Group, SenderType } from "@/lib/data";
 import {
   DAEMON_STATE_LABELS,
+  DaemonError,
+  KAKAO_BLOCKING_STATES,
   getDaemonStatus,
   getSyncedFriends,
   startFriendSync,
@@ -15,7 +17,6 @@ import {
 } from "@/lib/daemon";
 
 const POLL_MS = 700;
-const BLOCKING_STATES = new Set(["NotRunning", "LoggedOut", "Locked"]);
 
 type Phase = "checking" | "offline" | "idle" | "syncing" | "review";
 
@@ -97,7 +98,7 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
         setSyncCount(status.current_sync_cnt ?? 0);
         if (status.status === "GetKaoFriends") return;
         clearInterval(timer);
-        if (BLOCKING_STATES.has(status.status)) {
+        if (KAKAO_BLOCKING_STATES.has(status.status)) {
           setNotice({ tone: "error", text: `카카오톡 상태를 확인해 주세요: ${DAEMON_STATE_LABELS[status.status] ?? status.status}` });
           setPhase("idle");
           return;
@@ -126,7 +127,7 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
     setNotice(null);
     try {
       const status = await getDaemonStatus();
-      if (BLOCKING_STATES.has(status.status)) {
+      if (KAKAO_BLOCKING_STATES.has(status.status)) {
         setDaemonState(status.status);
         setNotice({ tone: "error", text: `카카오톡이 준비되지 않았습니다: ${DAEMON_STATE_LABELS[status.status] ?? status.status}` });
         return;
@@ -135,8 +136,10 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
       setSyncKeyword(mode === "Start-search" ? keyword.trim() : null);
       setSyncCount(0);
       setPhase("syncing");
-    } catch {
-      setNotice({ tone: "error", text: "불러오기를 시작하지 못했습니다. PC 프로그램이 다른 작업 중인지 확인해 주세요." });
+    } catch (error) {
+      // Only the PC program's own answers are worded for the user; network errors ("Failed to fetch") are not.
+      const reason = error instanceof DaemonError ? ` ${error.message}` : "";
+      setNotice({ tone: "error", text: `불러오기를 시작하지 못했습니다.${reason || " PC 프로그램이 다른 작업 중인지 확인해 주세요."}` });
     }
   };
 

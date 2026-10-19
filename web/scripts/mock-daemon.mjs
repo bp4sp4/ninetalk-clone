@@ -3,7 +3,10 @@
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.MOCK_DAEMON_PORT ?? 47301);
-const ALLOWED_ORIGINS = new Set((process.env.MOCK_DAEMON_ORIGINS ?? "http://localhost:3000").split(","));
+// localhost:3000 = npm run dev, 127.0.0.1:47300 = the desktop app (../desktop).
+const ALLOWED_ORIGINS = new Set(
+  (process.env.MOCK_DAEMON_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:47300").split(","),
+);
 
 const SURNAMES = ["김", "이", "박", "최", "정", "강", "조", "윤", "장", "임"];
 const GIVEN = ["민준", "서연", "도윤", "지우", "하준", "서윤", "은우", "지민", "예준", "수아", "시우", "하은"];
@@ -129,6 +132,12 @@ createServer(async (req, res) => {
     if (req.method === "POST" && pathname === "/send/stop") {
       sendJob.stopRequested = true;
       return send(res, origin, 202, { ok: true });
+    }
+    if (req.method === "POST" && pathname === "/shutdown") {
+      if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return send(res, origin, 415, { ok: false });
+      // The desktop app's normal exit path (the real daemon removes its tray icon and restores KakaoTalk).
+      send(res, origin, 202, { ok: true });
+      return setTimeout(() => process.exit(0), 50);
     }
     if (req.method === "POST" && pathname === "/friends/synchronize") {
       const { mode, option } = await readJson(req);

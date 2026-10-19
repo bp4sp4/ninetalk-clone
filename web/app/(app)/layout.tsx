@@ -1,7 +1,9 @@
+import { connection } from "next/server";
 import { Suspense } from "react";
 import { DaemonStatus } from "@/components/daemon-status";
 import { NavLinks } from "@/components/nav-links";
 import { requireUser } from "@/lib/auth";
+import { localMode } from "@/lib/local-mode";
 
 async function UserBadge() {
   const user = await requireUser();
@@ -20,6 +22,19 @@ async function UserBadge() {
   );
 }
 
+// The desktop app has no login (local mode), so there is nothing to log out of.
+async function LogoutButton() {
+  await connection();
+  if (localMode()) return null;
+  return (
+    <form action="/auth/logout" method="post">
+      <button type="submit" className="text-xs text-muted hover:text-foreground">
+        로그아웃
+      </button>
+    </form>
+  );
+}
+
 export default function AppLayout({ children }: LayoutProps<"/">) {
   return (
     <div className="min-h-screen md:flex">
@@ -34,11 +49,9 @@ export default function AppLayout({ children }: LayoutProps<"/">) {
             <Suspense fallback={<div className="h-8 w-24 animate-pulse rounded bg-black/5" />}>
               <UserBadge />
             </Suspense>
-            <form action="/auth/logout" method="post">
-              <button type="submit" className="text-xs text-muted hover:text-foreground">
-                로그아웃
-              </button>
-            </form>
+            <Suspense>
+              <LogoutButton />
+            </Suspense>
           </div>
         </div>
       </aside>

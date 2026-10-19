@@ -18,7 +18,8 @@ dotnet run
 - `web` 의 `npm run mock-daemon` 과 포트가 같습니다. **가짜 데몬은 끄고** 실행하세요(안 끄면 "포트를 열지 못했습니다" 창이 뜹니다).
 - 웹(`npm run dev`)에서 **친구 관리 > 카카오톡 친구 불러오기**(`/friends/import`)로 확인합니다.
 - 배포용 exe: `dotnet publish -c Release -r win-x64 --self-contained false` → `bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/NineTalkDaemon.exe`
-- 허용 Origin 기본값은 `http://localhost:3000`. 바꾸려면 환경변수 `NINETALK_ALLOWED_ORIGINS=https://내도메인,http://localhost:3000`.
+- 허용 Origin 기본값은 `http://localhost:3000`(웹 개발 서버)과 `http://127.0.0.1:47300`(데스크톱 앱). 바꾸려면 환경변수 `NINETALK_ALLOWED_ORIGINS=http://localhost:3000,...`. 데스크톱 앱이 데몬을 직접 띄울 때는 앱 주소만 넣어 실행합니다.
+- 데스크톱 앱에 넣을 때는 `desktop` 에서 `npm run build:daemon`(self-contained 게시 → `desktop/build/daemon`). 자세한 것은 [`../desktop/README.md`](../desktop/README.md).
 
 ## API 구현 상태
 
@@ -31,6 +32,7 @@ dotnet run
 | `GET /friends` | 규격 + 추가 필드: `friend_list[].ocr_uncertain`, `kakao_friend_count`(카톡의 "친구 N"), `unreadable_count` |
 | `POST /send` | 구현. 실제 전송 1건 확인(CLI). `images` 가 있으면 `400 images_not_supported`(이미지는 아직 못 보냄) |
 | `GET /send/result`, `POST /send/stop` | 구현. 웹에서 실제 데몬으로 1건 전송 확인, 중단은 mock-daemon으로 확인 |
+| `POST /shutdown`, 인자 `--parent-pid` | 데스크톱 앱용 정상 종료 경로. **Windows에서 빌드·실행 확인 안 함**(맥에서 작성, .NET SDK 없음). mock-daemon 쪽 `/shutdown` 은 확인 |
 
 보안: 허용 목록에 없는 `Origin` 요청은 CORS 헤더만 빼는 게 아니라 **403으로 거절**합니다(다른 사이트가 `text/plain` 같은 단순 요청으로 동기화를 시작하는 것 차단). POST는 `Content-Type: application/json` 만 받습니다(415). `localhost` 프리픽스라 다른 Host 헤더(DNS 리바인딩)는 http.sys가 거절합니다. 프리플라이트에 `Access-Control-Allow-Private-Network: true` 포함.
 

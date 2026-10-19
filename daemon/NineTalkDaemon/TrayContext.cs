@@ -10,9 +10,17 @@ sealed class TrayContext : ApplicationContext
     readonly ToolStripMenuItem statusItem = new("상태 확인 중...") { Enabled = false };
     readonly ToolStripMenuItem lastLogItem = new("") { Enabled = false, Visible = false };
     readonly System.Windows.Forms.Timer timer = new() { Interval = 2000 };
+    /// <summary>The desktop app that started this daemon (--parent-pid); when it is gone, exit too.</summary>
+    readonly System.Diagnostics.Process? parent;
 
-    public TrayContext()
+    public TrayContext(int? parentPid = null)
     {
+        if (parentPid is int pid)
+        {
+            try { parent = System.Diagnostics.Process.GetProcessById(pid); }
+            catch (ArgumentException) { } // already gone: run standalone
+        }
+
         var menu = new ContextMenuStrip();
         menu.Items.Add(statusItem);
         menu.Items.Add(lastLogItem);
@@ -40,6 +48,7 @@ sealed class TrayContext : ApplicationContext
         try
         {
             server = new HttpServer(sync, sender);
+            server.ShutdownRequested += () => ui.Post(_ => ExitThread(), null);
             server.Start();
         }
         catch (Exception ex)
@@ -48,7 +57,11 @@ sealed class TrayContext : ApplicationContext
                 "NineTalk 데몬", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
-        timer.Tick += (_, _) => RefreshStatus();
+        timer.Tick += (_, _) =>
+        {
+            if (parent is { HasExited: true }) { ExitThread(); return; }
+            RefreshStatus();
+        };
         timer.Start();
         RefreshStatus();
     }

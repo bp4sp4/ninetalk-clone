@@ -25,13 +25,17 @@ sealed class HttpServer : IDisposable
     {
         this.sync = sync;
         this.sender = sender;
-        var origins = Environment.GetEnvironmentVariable("NINETALK_ALLOWED_ORIGINS") ?? "http://localhost:3000";
+        // localhost:3000 = web dev server, 127.0.0.1:47300 = the desktop app (desktop/main.js).
+        var origins = Environment.GetEnvironmentVariable("NINETALK_ALLOWED_ORIGINS") ?? "http://localhost:3000,http://127.0.0.1:47300";
         allowedOrigins = new HashSet<string>(origins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         // A "localhost" prefix also makes http.sys reject other Host headers (DNS rebinding).
         listener.Prefixes.Add($"http://localhost:{Port}/");
     }
 
     public IReadOnlyCollection<string> AllowedOrigins => allowedOrigins;
+
+    /// <summary>POST /shutdown: the desktop app asks for a normal exit (tray icon removed, KakaoTalk window restored).</summary>
+    public event Action? ShutdownRequested;
 
     public void Start()
     {
@@ -107,6 +111,16 @@ sealed class HttpServer : IDisposable
                 case ("POST", "/send/stop"):
                     sender.Stop();
                     await Send(res, origin, 202, new { ok = true });
+                    break;
+
+                case ("POST", "/shutdown"):
+                    if (req.ContentType?.StartsWith("application/json") != true)
+                    {
+                        await Send(res, origin, 415, new { ok = false, error = "Content-Type must be application/json" });
+                        break;
+                    }
+                    await Send(res, origin, 202, new { ok = true });
+                    ShutdownRequested?.Invoke();
                     break;
 
                 case ("POST", "/friends/synchronize"):

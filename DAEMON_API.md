@@ -8,7 +8,7 @@
 ## 공통
 
 - 응답은 모두 `application/json; charset=utf-8`
-- **CORS**: `Access-Control-Allow-Origin` 은 `*` 대신 웹 대시보드 주소만 허용하세요 (예: `http://localhost:3000`, 배포 주소).
+- **CORS**: `Access-Control-Allow-Origin` 은 `*` 대신 웹 대시보드 주소만 허용하세요 (기본값: 웹 개발 서버 `http://localhost:3000`, 데스크톱 앱 `http://127.0.0.1:47300`).
   아무 사이트에서나 내 PC 카카오톡을 조작하지 못하게 막는 가장 중요한 장치입니다.
 - `OPTIONS` 프리플라이트에 `Access-Control-Allow-Methods: GET, POST, OPTIONS`, `Access-Control-Allow-Headers: Content-Type` 응답
 - 웹을 공개 도메인(https)에 배포하면 크롬의 Private Network Access 때문에 프리플라이트에 `Access-Control-Allow-Private-Network: true` 도 넣어야 합니다.
@@ -29,6 +29,9 @@
 | `NotRunning` | PC 카카오톡이 실행되지 않음 |
 | `LoggedOut` | PC 카카오톡 로그아웃 상태 |
 | `Locked` | PC 카카오톡 잠금 모드 |
+| `NoAccessibility` | (맥) PC 프로그램에 손쉬운 사용 권한이 없음 |
+| `DaemonBroken` | (맥) PC 프로그램의 카카오톡 조작 도구(`kakao-mac`)가 없거나 실행할 수 없음 |
+| `ShuttingDown` | PC 프로그램이 종료하는 중. 새 작업은 409 `{ "status": "ShuttingDown" }` |
 
 ## POST /friends/synchronize
 
@@ -116,9 +119,23 @@ PC 카카오톡 친구 탭에서 친구 이름을 읽기 시작합니다. 바로
 
 - `state`: `running` | `done` | `stopped` | `failed`(작업 전체가 중단된 오류, 예: 카카오톡 꺼짐) 
 - `results`: 지금까지 처리한 수신자만, 처리한 순서대로. 아직 안 한 사람은 없습니다.
-- `error` 코드: `not_found`, `duplicate_name`, `room_mismatch`, `send_failed`, `kakao_not_ready`
+- `error` 코드: `not_found`, `duplicate_name`, `room_mismatch`, `send_failed`, `kakao_not_ready`, `input_not_empty`(채팅방 입력창에 쓰던 글이 있어 손대지 않음, 맥), `dry_run`(시험 실행이라 안 보냄, 맥 `NINETALK_MAC_DRY_RUN=1`)
 - 마지막 작업 결과는 다음 `POST /send` 전까지 남아 있어야 합니다(웹 탭을 새로 고쳐도 결과를 받을 수 있게).
 
 ### POST /send/stop
 
 `202 { "ok": true }`. 지금 보내던 한 명까지만 마치고 멈춥니다. `state` 는 `stopped`.
+
+## 데스크톱 앱이 쓰는 것
+
+### POST /shutdown
+
+`202 { "ok": true }` 후 데몬이 정상 종료합니다(친구 읽기·발송 중단, 카카오톡 창 복원, 트레이 아이콘 제거). `Content-Type: application/json` 만 받습니다(415). 데스크톱 앱(`desktop/main.js`)이 종료할 때 부르고, 3초 안에 안 끝나면 프로세스를 강제 종료합니다.
+
+### 실행 인자 `--parent-pid <pid>`
+
+데스크톱 앱이 데몬을 띄울 때 자기 PID를 넘깁니다. 데몬은 2초마다 그 프로세스가 살아 있는지 보고, 없으면(앱 비정상 종료) 스스로 정상 종료합니다.
+
+### 데몬이 이미 떠 있을 때
+
+앱은 시작할 때 `GET /status` 로 47301을 확인합니다. 응답에 `status` 가 있으면 이미 떠 있는 데몬을 그대로 쓰고(앱을 꺼도 그 데몬은 안 끔), 연결 거부면 새로 띄우고, 다른 프로그램이 응답하면 안내 창을 띄웁니다.

@@ -1,0 +1,54 @@
+{
+  "name": "ninetalk-desktop",
+  "version": "0.1.0",
+  "productName": "NineTalkClone",
+  "private": true,
+  "description": "단체톡 관리 데스크톱 앱 (Next 대시보드 + Windows PC 프로그램)",
+  "main": "main.js",
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "build:daemon": "node scripts/build-daemon.mjs",
+    "build:daemon-mac": "node scripts/build-daemon-mac.mjs",
+    "start": "electron .",
+    "dist:win": "npm run build:web && npm run build:daemon && electron-builder --win",
+    "dist:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac",
+    "pack:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac --dir"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.ninetalkclone.desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "afterPack": "scripts/after-pack.cjs",
+    "dmg": {
+      "title": "${productName} ${version}"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+  }
+}
