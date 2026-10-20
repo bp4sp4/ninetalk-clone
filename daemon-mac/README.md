@@ -17,7 +17,7 @@ node server.mjs                                      # 실제 발송
 ```
 
 - 데스크톱 앱(`../desktop`)은 맥에서 이걸 자동으로 띄웁니다(`npm run build:daemon-mac` → `desktop/build/daemon-mac`). 개발 중 가짜 데몬을 쓰려면 `NINETALK_MOCK_DAEMON=1 npm start`.
-- **손쉬운 사용 권한**: 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 실행하는 앱을 허용해야 합니다. 터미널에서 돌리면 터미널, 데스크톱 앱이면 NineTalkClone(개발 실행이면 Electron). 권한이 없으면 `/status` 가 `NoAccessibility`.
+- **손쉬운 사용 권한**: 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 실행하는 앱을 허용해야 합니다. 터미널에서 돌리면 터미널, 데스크톱 앱이면 HanpyeongsaengTok(한평생톡, 개발 실행이면 Electron). 권한이 없으면 `/status` 가 `NoAccessibility`.
 - 테스트용 다른 포트: `NINETALK_MAC_PORT=47391` (대시보드는 항상 47301을 부르므로 테스트용).
 - 마지막 발송 작업은 `NINETALK_MAC_STATE_DIR/last-send.json`(기본 `~/Library/Application Support/NineTalkMacDaemon`, 데스크톱 앱은 앱 데이터 폴더의 `daemon-mac`)에 결과마다 저장됩니다. 도중에 꺼져도 다시 켜면 `/send/result` 가 그 결과를 돌려줘서, 발송 내역 화면이 이미 받은 사람을 기록합니다(두 번 보내지 않게).
 - `kakao-mac` 이 없으면 `/status` 가 `DaemonBroken`(웹: "PC 프로그램 설치 문제").

@@ -11,8 +11,8 @@
     "build:daemon-mac": "node scripts/build-daemon-mac.mjs",
     "start": "electron .",
     "dist:win": "npm run build:web && npm run build:daemon && electron-builder --win",
-    "dist:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac",
-    "pack:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac --dir"
+    "dist:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac -c.productName=HanpyeongsaengTok",
+    "pack:mac": "npm run build:web && npm run build:daemon-mac && electron-builder --mac --dir -c.productName=HanpyeongsaengTok"
   },
   "devDependencies": {
     "electron": "44.5.1",
@@ -47,11 +47,14 @@
         }
       ],
       "category": "public.app-category.productivity",
-      "icon": "icons/icon.png"
+      "icon": "icons/icon.png",
+      "extendInfo": {
+        "CFBundleDisplayName": "한평생톡"
+      }
     },
     "afterPack": "scripts/after-pack.cjs",
     "dmg": {
-      "title": "${productName} ${version}"
+      "title": "한평생톡 ${version}"
     },
     "artifactName": "HanpyeongsaengTok-${version}-${os}-${arch}.${ext}"
   }
