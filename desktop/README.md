@@ -13,7 +13,7 @@
 ```
 
 - **로그인 없음**: 내 PC에서 혼자 쓰는 앱이라 카카오 로그인을 뺐습니다. 웹 서버를 `NINETALK_LOCAL_MODE=1` 로 띄우면 모든 데이터가 로컬 사용자 1명 것이 됩니다(`../web/README.md`). 웹 단독 실행(`npm run dev`)의 카카오 로그인은 그대로 있습니다.
-- **데이터**: 사용자 데이터 폴더의 `data/` (맥 `~/Library/Application Support/NineTalkClone/data`, Windows `%APPDATA%\NineTalkClone\data`). 웹 개발용 `web/data` 와 따로입니다.
+- **데이터**: 사용자 데이터 폴더의 `data/` (맥 `~/Library/Application Support/한평생톡/data`, Windows `%APPDATA%\한평생톡\data`). 웹 개발용 `web/data` 와 따로입니다.
 - **포트**: 앱 47300(고정, 127.0.0.1에만 열림), 데몬 47301. 47300을 다른 프로그램이 쓰면 오류 창을 띄우고 종료합니다. 앱은 하나만 실행됩니다(두 번째 실행은 기존 창을 앞으로).
 - **데몬**: 시작할 때 `GET http://localhost:47301/status` 로 확인합니다. 이미 떠 있으면(손으로 `dotnet run` 한 데몬, mock-daemon) 새로 띄우지 않고 그대로 씁니다(그 데몬의 기본 허용 Origin에 `http://127.0.0.1:47300` 이 들어 있음). 다른 프로그램이 47301을 쓰면 안내 창을 띄우고 데몬 없이 계속합니다.
 - **종료**: 앱이 띄운 데몬은 앱을 끌 때 `POST /shutdown` 으로 정상 종료시키고(트레이 아이콘 제거, 카카오톡 창 복원), 3초 안에 안 꺼지면 강제 종료합니다. 앱이 비정상 종료되면 데몬이 `--parent-pid` 로 알아채고 스스로 꺼집니다.
@@ -28,8 +28,10 @@ npm run build:daemon-mac   # ../daemon-mac → build/daemon-mac (swiftc 필요)
 npm start                  # 앱 실행 + 맥용 PC 프로그램 → 실제 카카오톡으로 보낼 수 있음
 NINETALK_MAC_DRY_RUN=1 npm start   # 발송이 전부 dry-run (채팅방에 넣었다 지우고 닫음, 안 보냄)
 NINETALK_MOCK_DAEMON=1 npm start   # 카카오톡 대신 가짜 데몬
-npm run dist:mac           # (선택) dist/mac-arm64/NineTalkClone.app 로 패키징. 서명 안 함
+npm run dist:mac           # dist/HanpyeongsaengTok-<버전>-mac-arm64.dmg (안에 HanpyeongsaengTok.app). 서명 안 함
 ```
+
+**맥 앱 이름**: 맥에서는 앱 파일·실행 파일 이름과 `CFBundleName` 이 한글이면 Electron 이 시작하자마자 죽습니다(2026-10-20 확인, 충돌 보고서상 Electron 시작 단계). 그래서 `dist:mac` 은 `-c.productName=HanpyeongsaengTok` 으로 영문 이름을 쓰고, Dock·메뉴에 보이는 이름만 `CFBundleDisplayName`=한평생톡 으로 둡니다(Finder 파일 이름은 `HanpyeongsaengTok.app`). 데이터 폴더는 Windows 와 같은 `한평생톡`.
 
 화면 작업은 지금처럼 `../web` 에서 `npm run dev` + `npm run mock-daemon` 으로 브라우저에서 하는 게 빠릅니다.
 맥에서는 처음 실행할 때 **손쉬운 사용 권한**을 묻습니다(시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용). 허용 전에는 사이드바가 "손쉬운 사용 권한 필요". 서명 안 한 앱이라 다시 빌드하면 권한을 다시 줘야 할 수 있습니다. 자세한 것은 [`../daemon-mac/README.md`](../daemon-mac/README.md).
@@ -40,7 +42,7 @@ npm run dist:mac           # (선택) dist/mac-arm64/NineTalkClone.app 로 패�
 
 ```bash
 npm install
-npm run dist:win      # build:web + build:daemon + electron-builder --win → dist/NineTalkClone-0.1.0-win-x64.exe
+npm run dist:win      # build:web + build:daemon + electron-builder --win → dist/HanpyeongsaengTok-0.1.0-win-x64.exe
 ```
 
 - `build:daemon` 은 `dotnet publish -c Release -r win-x64 --self-contained true` 로 `build/daemon` 에 게시합니다(사용자 PC에 .NET 런타임 설치 불필요).
