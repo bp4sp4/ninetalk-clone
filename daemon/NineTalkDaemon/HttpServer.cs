@@ -12,7 +12,7 @@ namespace NineTalkDaemon;
 sealed class HttpServer : IDisposable
 {
     public const int Port = 47301;
-    public const string Version = "0.1.1";
+    public const string Version = "0.1.2";
 
     static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 

@@ -84,7 +84,36 @@ static class KakaoSender
                 var input = Native.ChildWindows(chat).FirstOrDefault(h => Native.ClassName(h).StartsWith("RICHEDIT", StringComparison.OrdinalIgnoreCase));
                 if (input == IntPtr.Zero) { log("  입력창을 찾지 못함"); return "send_failed"; }
                 // Someone's unsent draft: never overwrite it or send it along.
-                if (Native.TextLength(input) > 0) { log("  입력창에 쓰던 글이 있어 건드리지 않음"); return "input_not_empty"; }
+                // A length of 0 is surely empty. A length above 0 may be stale: WM_GETTEXTLENGTH has reported the
+                // last sent text after a send, which would stop every send here. So then the yellow "전송" button
+                // decides (KakaoTalk lights it only while its input holds text), watched for about a second in case
+                // a draft is drawn late. A failed capture stops the send: never overwrite what we could not see.
+                // What the box held when its length was above 0 but the button stayed grey. Put back if the button
+                // then never lights for our text either: on such a PC the button check does not work (another
+                // theme or scaling), so that may have been a real draft we could not see.
+                string? unconfirmed = null;
+                if (Native.TextLength(input) > 0)
+                {
+                    for (int i = 0; i < 6; i++)
+                    {
+                        await Task.Delay(200, ct);
+                        var lit = SendButtonLit(chat);
+                        if (lit is null) { log("  채팅창을 캡처하지 못해 입력창을 확인할 수 없음"); return "send_failed"; }
+                        if (lit == true) { log("  입력창에 쓰던 글이 있어 건드리지 않음 (전송 버튼이 켜져 있음)"); return "input_not_empty"; }
+                    }
+                    log($"  입력창 글자 수 {Native.TextLength(input)} 이지만 전송 버튼이 꺼져 있어 빈 것으로 봄");
+                    unconfirmed = Native.GetText(input);
+                }
+                // The button never lit for our text: the box is put back as it was (see unconfirmed above).
+                void PutBack()
+                {
+                    if (unconfirmed is { Length: > 0 })
+                    {
+                        Native.ReplaceText(input, unconfirmed, undoable: false);
+                        log("  전송 버튼을 알아보지 못해 입력창을 원래대로 되돌림");
+                    }
+                    else Native.ClearText(input);
+                }
 
                 int sentSteps = 0;
                 string Failed(string detail)
@@ -95,10 +124,11 @@ static class KakaoSender
 
                 async Task<string?> TextStep()
                 {
-                    // Text into the input, then the yellow "전송" button.
+                    // Text into the input, then the yellow "전송" button. From here on no wait can be cancelled,
+                    // so the box is always sent, put back or cleared, never left holding our text.
                     Native.ReplaceText(input, text);
-                    await Task.Delay(300, ct);
-                    if (Native.TextLength(input) == 0) return Failed("입력창에 문구가 들어가지 않음");
+                    await Task.Delay(300, CancellationToken.None);
+                    if (Native.TextLength(input) == 0) { PutBack(); return Failed("입력창에 문구가 들어가지 않음"); }
 
                     // It turns yellow only once KakaoTalk has registered the text, which doubles as a check
                     // that the text really went in.
@@ -106,7 +136,7 @@ static class KakaoSender
                     for (int i = 0; i < 10 && button is null; i++)
                     {
                         button = FindSendButton(chat);
-                        if (button is null) await Task.Delay(150, ct);
+                        if (button is null) await Task.Delay(150, CancellationToken.None);
                     }
                     log(button is Point p ? $"  전송 버튼 {p.X},{p.Y} (채팅창 기준)" : "  전송 버튼을 찾지 못함");
 
@@ -114,11 +144,12 @@ static class KakaoSender
                     {
                         log("  [dry-run] 입력창에 넣기까지만 하고 보내지 않음");
                         SaveInputArea(chat, input, log);
-                        await Task.Delay(1500, ct); // time to look at it
-                        Native.SetText(input, "");
-                        return button is null ? Failed("전송 버튼 없음") : null;
+                        await Task.Delay(1500, CancellationToken.None); // time to look at it
+                        if (button is null) { PutBack(); return Failed("전송 버튼 없음"); }
+                        Native.ClearText(input);
+                        return null;
                     }
-                    if (button is not Point click) { Native.SetText(input, ""); return Failed("전송 버튼 없음"); }
+                    if (button is not Point click) { PutBack(); return Failed("전송 버튼 없음"); }
 
                     FriendListReader.Click(chat, click.X, click.Y);
                     // Sent = the button went back to grey (KakaoTalk emptied its input). WM_GETTEXTLENGTH is not
@@ -129,7 +160,7 @@ static class KakaoSender
                         await Task.Delay(200, CancellationToken.None); // never abandon a send half-way
                         if (FindSendButton(chat) is null) { sentSteps++; return null; }
                     }
-                    Native.SetText(input, "");
+                    Native.ClearText(input);
                     return Failed("전송 버튼을 누른 뒤에도 버튼이 활성 상태로 남음");
                 }
 
@@ -213,6 +244,7 @@ static class KakaoSender
             return owned.Count == 1 ? owned[0] : null;
         }
 
+        int lengthBefore = Native.TextLength(input);
         // Posted, not sent: if the paste opens a modal window, SendMessage would wait until someone closed it.
         Native.PostMessage(input, Native.WM_PASTE, IntPtr.Zero, IntPtr.Zero);
         var sheet = await WaitForAsync<IntPtr>(8000, FindSheet); // a large image takes a while to preview
@@ -229,8 +261,9 @@ static class KakaoSender
             }
             bool leftOpen = leftovers.Count > 0
                 && await WaitForAsync(3000, () => leftovers.Any(h => Native.IsWindow(h) && Native.IsWindowVisible(h)) ? null : (bool?)true) is null;
-            // WM_PASTE may have put the image into the input box itself.
-            if (Native.TextLength(input) > 0) Native.SetText(input, "");
+            // WM_PASTE may have put the image into the input box itself. Cleared only when the box was empty
+            // before, so a draft we could not see is never wiped.
+            if (lengthBefore == 0 && Native.TextLength(input) > 0) Native.ClearText(input);
             return leftOpen ? ("붙여넣은 뒤 뜬 창이 닫히지 않음", true) : ("이미지 전송 창이 뜨지 않음", false);
         }
         var rect = Native.WindowRect(window);
@@ -340,6 +373,14 @@ static class KakaoSender
     static List<IntPtr> KakaoWindows(KakaoWindow kakao) =>
         Native.TopLevelWindows(kakao.ProcessId).Where(h => h != kakao.Main && Native.IsWindowVisible(h)).ToList();
 
+    /// <summary>Whether the chat's "전송" button is lit (its input holds text); null when the chat cannot be captured.</summary>
+    static bool? SendButtonLit(IntPtr chat)
+    {
+        using var img = Capture.Window(chat);
+        if (img is null || Capture.NonBlackRatio(img) < 0.05) return null;
+        return FindSendButton(chat, img) is not null; // the same capture, so the two checks cannot disagree
+    }
+
     /// <summary>
     /// Finds the yellow "전송" button in the bottom bar of a chat window and returns a point on its label,
     /// in the chat window's client coordinates. The yellow area also holds the "▾" send-options button on
@@ -348,7 +389,11 @@ static class KakaoSender
     static Point? FindSendButton(IntPtr chat)
     {
         using var img = Capture.Window(chat);
-        if (img is null) return null;
+        return img is null ? null : FindSendButton(chat, img);
+    }
+
+    static Point? FindSendButton(IntPtr chat, Bitmap img)
+    {
         var s = Native.GetDpiForWindow(chat) / 96.0;
         int bottomBar = (int)(70 * s);
         int left = int.MaxValue, right = -1, top = int.MaxValue, bottom = -1;
