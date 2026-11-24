@@ -49,6 +49,22 @@ static class KakaoSender
             Native.SetText(kakao.FriendSearchEdit, name);
             await Task.Delay(700, ct);
             int rows = await CountSearchRowsAsync(kakao, s, ct);
+            // KakaoTalk can draw the results late when busy: an empty result is looked at a few more times
+            // before the friend counts as not found.
+            bool retried = false;
+            for (int retry = 0; rows == 0 && retry < 3; retry++)
+            {
+                retried = true;
+                await Task.Delay(500, ct);
+                rows = await CountSearchRowsAsync(kakao, s, ct);
+            }
+            // Results drawn late may also be drawn part by part: a count found on a retry is taken only after one
+            // more look, and the larger count wins (one of two same-named friends must never pass as the only one).
+            if (retried && rows > 0)
+            {
+                await Task.Delay(500, ct);
+                rows = Math.Max(rows, await CountSearchRowsAsync(kakao, s, ct));
+            }
             log($"  검색 결과 {rows}명");
             if (rows == 0) return "not_found";
             if (rows > 1) return "duplicate_name";

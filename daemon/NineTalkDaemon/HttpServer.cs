@@ -12,7 +12,7 @@ namespace NineTalkDaemon;
 sealed class HttpServer : IDisposable
 {
     public const int Port = 47301;
-    public const string Version = "0.1.7";
+    public const string Version = "0.1.8";
 
     static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -293,6 +293,8 @@ sealed class HttpServer : IDisposable
 
     static async Task Send(HttpListenerResponse res, string? origin, int code, object? body)
     {
+        // Refused or failed requests (not "busy", 409, which is an ordinary answer).
+        if (code >= 400 && code != 409) ErrorLog.Add("요청", $"{code} {(body is null ? "" : JsonSerializer.Serialize(body, Json))}");
         res.StatusCode = code;
         if (origin is not null)
         {
