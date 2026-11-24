@@ -47,6 +47,38 @@ static class Ocr
     /// </summary>
     public static async Task<List<OcrLine>> RecognizeAsync(Bitmap image, float scale = 2f, bool gray = false)
     {
+        var result = await RunAsync(image, scale, gray);
+        var lines = new List<OcrLine>();
+        foreach (var line in result.Lines)
+        {
+            if (line.Words.Count == 0) continue;
+            double l = double.MaxValue, t = double.MaxValue, r = 0, b = 0;
+            foreach (var w in line.Words)
+            {
+                l = Math.Min(l, w.BoundingRect.Left);
+                t = Math.Min(t, w.BoundingRect.Top);
+                r = Math.Max(r, w.BoundingRect.Right);
+                b = Math.Max(b, w.BoundingRect.Bottom);
+            }
+            lines.Add(new OcrLine(line.Text, Unscale(l, t, r, b, scale)));
+        }
+        return lines;
+    }
+
+    /// <summary>Like <see cref="RecognizeAsync"/>, one entry per word (two buttons side by side are one OCR line).</summary>
+    public static async Task<List<OcrLine>> RecognizeWordsAsync(Bitmap image, float scale = 2f)
+    {
+        var result = await RunAsync(image, scale, false);
+        return result.Lines.SelectMany(line => line.Words)
+            .Select(w => new OcrLine(w.Text, Unscale(w.BoundingRect.Left, w.BoundingRect.Top, w.BoundingRect.Right, w.BoundingRect.Bottom, scale)))
+            .ToList();
+    }
+
+    static Rectangle Unscale(double l, double t, double r, double b, float scale) =>
+        Rectangle.FromLTRB((int)(l / scale), (int)(t / scale), (int)Math.Ceiling(r / scale), (int)Math.Ceiling(b / scale));
+
+    static async Task<OcrResult> RunAsync(Bitmap image, float scale, bool gray)
+    {
         using var scaled = new Bitmap((int)(image.Width * scale), (int)(image.Height * scale), PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(scaled))
         {
@@ -69,23 +101,6 @@ static class Ocr
         stream.Position = 0;
         var decoder = await BitmapDecoder.CreateAsync(stream.AsRandomAccessStream());
         using var software = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-        var result = await Engine.RecognizeAsync(software);
-
-        var lines = new List<OcrLine>();
-        foreach (var line in result.Lines)
-        {
-            if (line.Words.Count == 0) continue;
-            double l = double.MaxValue, t = double.MaxValue, r = 0, b = 0;
-            foreach (var w in line.Words)
-            {
-                l = Math.Min(l, w.BoundingRect.Left);
-                t = Math.Min(t, w.BoundingRect.Top);
-                r = Math.Max(r, w.BoundingRect.Right);
-                b = Math.Max(b, w.BoundingRect.Bottom);
-            }
-            var bounds = Rectangle.FromLTRB((int)(l / scale), (int)(t / scale), (int)Math.Ceiling(r / scale), (int)Math.Ceiling(b / scale));
-            lines.Add(new OcrLine(line.Text, bounds));
-        }
-        return lines;
+        return await Engine.RecognizeAsync(software);
     }
 }

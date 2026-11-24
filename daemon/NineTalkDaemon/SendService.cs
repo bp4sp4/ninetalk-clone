@@ -25,20 +25,30 @@ sealed class SendService
     /// </summary>
     static void RemoveFileFolders()
     {
-        try
+        // Also the folder 0.1.6~0.1.8 used, which KakaoTalk could not read from (see FilesRoot).
+        var oldRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NineTalkDaemon");
+        foreach (var root in new[] { FilesRoot, oldRoot })
         {
-            foreach (var dir in Directory.GetDirectories(FilesRoot, "files-*"))
+            try
             {
-                if (DateTime.Now - Directory.GetCreationTime(dir) < TimeSpan.FromMinutes(30)) continue;
-                try { Directory.Delete(dir, recursive: true); } catch { /* in use: next time */ }
+                foreach (var dir in Directory.GetDirectories(root, "files-*"))
+                {
+                    if (DateTime.Now - Directory.GetCreationTime(dir) < TimeSpan.FromMinutes(30)) continue;
+                    try { Directory.Delete(dir, recursive: true); } catch { /* in use: next time */ }
+                }
             }
+            catch { /* no folder yet */ }
         }
-        catch { /* no folder yet */ }
     }
 
-    /// <summary>Where a job's files are written for pasting (KakaoTalk reads them while it uploads).</summary>
+    /// <summary>
+    /// Where a job's files are written for KakaoTalk to pick in its file window (it reads them while it uploads).
+    /// Not under AppData: KakaoTalk's file window says "경로가 없습니다" for a file there (KakaoTalk 26.8,
+    /// 2026-11-24, while the same file elsewhere opens). Not Documents or Desktop either: those are often synced
+    /// to OneDrive, and these are customers' files.
+    /// </summary>
     static readonly string FilesRoot = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NineTalkDaemon");
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "NineTalkFiles");
 
     /// <summary>
     /// Pacing from POST /send: pause after each recipient (on top of the ~3s one send takes), and in
