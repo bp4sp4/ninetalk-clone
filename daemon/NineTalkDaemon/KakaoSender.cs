@@ -12,8 +12,10 @@ namespace NineTalkDaemon;
 ///    the input and closes the chat. Otherwise the yellow "전송" button is clicked, and an empty input
 ///    afterwards confirms the send.
 /// 5. Images (if any, before or after the text): each goes on the clipboard and is pasted into the chat;
-///    KakaoTalk shows its image-send window, whose yellow "전송" button is clicked (WM_CLOSE in dry-run).
-///    Files the same way after the images. See <see cref="SendPastedAsync"/>.
+///    KakaoTalk shows its image-send window, whose "전송" button is clicked (WM_CLOSE in dry-run).
+///    See <see cref="SendPastedAsync"/>. Files after the images, each through KakaoTalk's file window (Ctrl+T
+///    opens a Windows "열기" dialog; the path goes in, 열기 is pressed; cancelled in dry-run). Pasting a file does
+///    nothing in KakaoTalk for Windows. See <see cref="SendFileAsync"/>.
 /// 6. The chat window is closed (WM_CLOSE) unless it was already open before. If KakaoTalk asks something
 ///    instead (an image still uploading), the chat is left open and the question untouched.
 ///
@@ -180,9 +182,9 @@ static class KakaoSender
                     return Failed("전송 버튼을 누른 뒤에도 버튼이 활성 상태로 남음");
                 }
 
-                // Images first, then files, each pasted on its own.
-                var pastes = images.Select(ImagePaste).Concat(filePaths.Select(FilePaste)).ToList();
-                var clipboard = pastes.Count > 0 ? ClipboardImage.Save() : null;
+                // Images first (each pasted on its own), then files (each through KakaoTalk's file window).
+                var pastes = images.Select(ImagePaste).Concat(filePaths.Select(FileItem)).ToList();
+                var clipboard = images.Count > 0 ? ClipboardImage.Save() : null;
                 try
                 {
                     var steps = new List<Func<Task<string?>>>();
@@ -193,14 +195,9 @@ static class KakaoSender
                         var label = $"{item.What} {pastes.Take(n + 1).Count(p => p.What == item.What)}";
                         steps.Add(async () =>
                         {
-                            if (dryRun && item.FileName is not null)
-                            {
-                                // KakaoTalk may send a pasted file at once, without a window to cancel: a dry-run
-                                // must never paste one.
-                                log($"  [dry-run] {label}: 파일은 바로 보내질 수 있어 붙여넣지 않음");
-                                return null;
-                            }
-                            var (problem, unsure) = await SendPastedAsync(kakao, chat, input, item, clipboard!, dryRun, log);
+                            var (problem, unsure) = item.FilePath is null
+                                ? await SendPastedAsync(kakao, chat, input, item, clipboard!, dryRun, log)
+                                : await SendFileAsync(kakao, chat, input, item, dryRun, log);
                             if (problem is not null && unsure)
                             {
                                 // Whether it went out is unknown (a window left over, or a file with no window):
@@ -210,7 +207,7 @@ static class KakaoSender
                             }
                             // A file step fails the same way for everyone (the window is the same each time):
                             // "_stop" tells the job to stop instead of sending everyone the text without the file.
-                            if (problem is not null) return Failed($"{label}: {problem}") + (item.FileName is not null ? StopSuffix : "");
+                            if (problem is not null) return Failed($"{label}: {problem}") + (item.FilePath is not null ? StopSuffix : "");
                             if (!dryRun) sentSteps++;
                             return null;
                         });
@@ -248,88 +245,45 @@ static class KakaoSender
     /// <summary>Added to an error code when the whole job should stop (SendService strips it).</summary>
     public const string StopSuffix = "_stop";
 
-    /// <summary>One thing to paste into the chat: an image or a file.</summary>
-    sealed record Pasted(string What, Func<ClipboardImage, bool> Put, long Size, int MaxUploadWaitMs, string? FileName);
+    /// <summary>One thing to send besides the text: an image (pasted) or a file (FilePath, through the file window).</summary>
+    sealed record Pasted(string What, Func<ClipboardImage, bool>? Put, long Size, int MaxUploadWaitMs, string? FilePath);
 
     static Pasted ImagePaste(byte[] image) => new("이미지", clipboard => clipboard.Put(image), image.Length, 60000, null);
-    static Pasted FilePaste(string path) =>
-        new("파일", clipboard => clipboard.PutFile(path), new FileInfo(path).Length, 120000, Path.GetFileName(path));
+    static Pasted FileItem(string path) => new("파일", null, new FileInfo(path).Length, 120000, path);
 
     /// <summary>
-    /// Pastes one image or file into the chat and sends it from the window KakaoTalk shows for it. Returns null
-    /// when it went out (dry-run: when the window appeared and was cancelled), otherwise what went wrong;
-    /// `unsure` means it is unknown whether something went out (a window we could not close is left over, or,
-    /// for a file, no window appeared and nothing shows the paste was refused).
+    /// Pastes one image into the chat and sends it from the window KakaoTalk shows for it. Returns null when it
+    /// went out (dry-run: when the window appeared and was cancelled), otherwise what went wrong; `unsure`
+    /// means it is unknown whether something went out (a window we could not close is left over).
     ///
-    /// 1. It goes on the clipboard (an image as a bitmap, a file the way Explorer copies one) and Ctrl+V is
-    ///    posted to the chat input only (Native.PostCtrlKey).
+    /// 1. It goes on the clipboard as a bitmap and Ctrl+V is posted to the chat input only (Native.PostCtrlKey).
     ///    No global key input: a real Ctrl+V could land in whatever program the user is typing in.
-    /// 2. The image-send window is a new window owned by this chat, or the only new one sitting over the chat
-    ///    with a preview's size, so a message notification popping up meanwhile is not clicked. Its yellow
-    ///    "전송" button is found on a capture and clicked; the window closing means it was sent.
+    /// 2. The image-send window is found (<see cref="FindSheet"/>), its "전송" button is found on a capture
+    ///    and clicked; the window closing means it was sent.
     /// 3. The upload is given time before moving on (closing the chat during an upload drops the image);
     ///    KakaoTalk shows no progress that can be read, so the wait grows with the image size.
+    /// Files are not pasted: KakaoTalk for Windows ignores a pasted file, even one Explorer copied (checked by
+    /// hand on 26.8, 2026-11-24). They go through <see cref="SendFileAsync"/>.
     /// </summary>
     static async Task<(string? problem, bool unsure)> SendPastedAsync(KakaoWindow kakao, IntPtr chat, IntPtr input, Pasted item,
         ClipboardImage clipboard, bool dryRun, Action<string> log)
     {
-        var ct = CancellationToken.None; // a paste in flight is always finished or cancelled, never abandoned
         var what = item.What;
-        if (!item.Put(clipboard)) return ($"클립보드에 {what}을 넣지 못함", false);
+        if (!item.Put!(clipboard)) return ($"클립보드에 {what}을 넣지 못함", false);
 
         var before = KakaoWindows(kakao).ToHashSet();
-        List<IntPtr> Fresh() => KakaoWindows(kakao).Where(h => !before.Contains(h) && h != chat).ToList();
-        var chatRect = Native.WindowRect(chat);
-        // The image window: a new window owned by this chat, or else the only new window, sitting over the
-        // chat and big enough for a preview (a message notification pops up small, at the screen corner).
-        IntPtr? FindSheet()
-        {
-            var fresh = Fresh();
-            var owned = fresh.Where(h => Native.GetWindow(h, Native.GW_OWNER) == chat).ToList();
-            if (owned.Count == 1) return owned[0];
-            if (owned.Count > 1 || fresh.Count != 1) return null;
-            var r = Native.WindowRect(fresh[0]);
-            var center = new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
-            return chatRect.Contains(center) && r.Width >= 200 && r.Height >= 150 ? fresh[0] : null;
-        }
-
         // Ctrl+V to the chat input only (WM_PASTE alone opened nothing on KakaoTalk 26.8, 2026-11-24).
         // false: nothing was sent. null (did not finish in time): it may still arrive, so watch for the window as usual.
         if (Native.PostCtrlKey(input, 0x56 /* V */) == false) return ("붙여넣기 키를 보내지 못함", false);
-        var sheet = await WaitForAsync<IntPtr>(8000, FindSheet); // a large image takes a while to preview
+        var sheet = await WaitForAsync<IntPtr>(8000, () => FindSheet(kakao, chat, before)); // a large image takes a while to preview
         if (sheet is not IntPtr window)
         {
-            // Nothing we recognise. Close whatever appeared after the paste: an image window we did not
-            // recognise must not stay open for a stray Enter to send (closing a notification does no harm).
-            var leftovers = Fresh();
-            foreach (var h in leftovers)
-            {
-                var r = Native.WindowRect(h);
-                log($"  붙여넣은 뒤 뜬 창 0x{h:X} {Native.ClassName(h)} 제목 {Native.WindowText(h).Length}자 {r.Width}x{r.Height}, 소유 창 0x{Native.GetWindow(h, Native.GW_OWNER):X} → 닫음");
-                Native.PostMessage(h, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-            }
-            bool leftOpen = leftovers.Count > 0
-                && await WaitForAsync(3000, () => leftovers.Any(h => Native.IsWindow(h) && Native.IsWindowVisible(h)) ? null : (bool?)true) is null;
+            bool leftOpen = !await CloseLeftoversAsync(kakao, chat, before, "붙여넣은 뒤", log);
             // The key may have arrived as a plain "v" ("ㅍ" in Korean input), or the image went into the box as one
             // embedded object. Cleared only when the box now holds exactly one character and the button lit up:
             // anything longer could be a draft drawn late or something the user typed, and is left alone.
-            // A file may also have gone in as its path or name: that text is ours too.
-            bool landedInBox = false;
-            if (SendButtonLit(chat) == true)
-            {
-                var boxText = Native.GetText(input);
-                if (boxText.Length == 1 || item.FileName is { Length: > 0 } name && boxText.Contains(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    log("  붙여넣기가 입력창에 글자로 들어가 지움");
-                    Native.ClearText(input);
-                    landedInBox = true;
-                }
-                else log("  붙여넣은 뒤 입력창에 글이 있어 그대로 둠");
-            }
+            ClearStrayKey(chat, input, log);
             if (leftOpen) return ("붙여넣은 뒤 뜬 창이 닫히지 않음", true);
-            // An image always gets a window first. A file might be sent straight away without one, so no window
-            // (and no text in the box) leaves it unknown whether it went out: never offered for sending again.
-            if (item.FileName is not null && !landedInBox) return ($"{what} 전송 창이 뜨지 않음 (바로 보내졌을 수 있음)", true);
             return ($"{what} 전송 창이 뜨지 않음", false);
         }
         var rect = Native.WindowRect(window);
@@ -337,23 +291,236 @@ static class KakaoSender
 
         if (dryRun)
         {
-            await Task.Delay(1000, ct); // time to look at it
+            await Task.Delay(1000, CancellationToken.None); // time to look at it
             return await CancelSheetAsync(window) ? (null, false) : ($"{what} 창이 닫히지 않음", true);
         }
+        var pressed = await PressSheetSendAsync(window, item, log);
+        if (pressed.problem is not null) return pressed;
+        await WaitUploadAsync(item, log);
+        return (null, false);
+    }
 
+    /// <summary>
+    /// Sends one file through KakaoTalk's own file window: Ctrl+T in a chat opens a standard Windows "열기"
+    /// dialog owned by the chat (KakaoTalk 26.8, 2026-11-24: #32770, 파일 이름 box = Edit in combo 1148,
+    /// 열기 = button 1). The file's full path goes into the 파일 이름 box and 열기 is pressed, all by window
+    /// messages, so nothing depends on where the dialog sits or which folder it shows. Dry-run fills the box
+    /// and cancels, so it checks everything up to the moment the file would be chosen.
+    ///
+    /// Nothing can go out before 열기, so every failure until then is a plain failure. After 열기 KakaoTalk
+    /// either sends at once or asks in a window over the chat, whose "전송" is pressed like the image window's
+    /// (only after its label reads 전송). A window after 열기 that is not recognised leaves the outcome unknown.
+    /// </summary>
+    static async Task<(string? problem, bool unsure)> SendFileAsync(KakaoWindow kakao, IntPtr chat, IntPtr input, Pasted item,
+        bool dryRun, Action<string> log)
+    {
+        var path = item.FilePath!;
+        var before = KakaoWindows(kakao).ToHashSet();
+        IntPtr? FindDialog() => KakaoWindows(kakao)
+            .Where(h => !before.Contains(h) && Native.ClassName(h) == "#32770" && Native.GetWindow(h, Native.GW_OWNER) == chat)
+            .Select(h => (IntPtr?)h).FirstOrDefault();
+
+        if (Native.PostCtrlKey(input, 0x54 /* T */) == false) return ("파일 보내기 키를 보내지 못함", false);
+        if (await WaitForAsync<IntPtr>(5000, FindDialog) is not IntPtr dialog)
+        {
+            bool leftOpen = !await CloseLeftoversAsync(kakao, chat, before, "파일 보내기 키 뒤", log);
+            ClearStrayKey(chat, input, log); // a "t" ("ㅅ") typed instead
+            return ("파일 선택 창이 뜨지 않음", leftOpen);
+        }
+        var dialogRect = Native.WindowRect(dialog);
+        log($"  파일 선택 창 0x{dialog:X} {dialogRect.Width}x{dialogRect.Height}");
+
+        // From here on the dialog is always closed one way or another: one left open with our path in it could
+        // be sent by a stray Enter, so a dialog that will not close leaves the outcome unknown.
+        var nameBox = FileNameBox(dialog);
+        if (nameBox == IntPtr.Zero) return ("파일 선택 창의 파일 이름 칸을 찾지 못함", !await CancelSheetAsync(dialog));
+        Native.SetText(nameBox, path);
+        await Task.Delay(200, CancellationToken.None);
+        if (Native.GetText(nameBox) != path) return ("파일 이름 칸에 경로가 들어가지 않음", !await CancelSheetAsync(dialog));
+        var open = Native.ChildWindows(dialog).FirstOrDefault(h =>
+            Native.GetParent(h) == dialog && Native.GetDlgCtrlID(h) == Native.IDOK && Native.ClassName(h) == "Button");
+        if (open == IntPtr.Zero) return ("파일 선택 창의 열기 버튼을 찾지 못함", !await CancelSheetAsync(dialog));
+
+        if (dryRun)
+        {
+            log("  [dry-run] 파일 이름 칸에 경로를 넣기까지만 하고 취소");
+            await Task.Delay(1000, CancellationToken.None); // time to look at it
+            return await CancelSheetAsync(dialog) ? (null, false) : ("파일 선택 창이 닫히지 않음", true);
+        }
+
+        // 열기 = the dialog's IDOK, sent as the button's click notification (works while the dialog is not active).
+        var beforeOpen = KakaoWindows(kakao).ToHashSet();
+        Native.PostMessage(dialog, Native.WM_COMMAND, (IntPtr)Native.IDOK, open);
+        log("  파일 선택 창에서 열기 누름");
+
+        // KakaoTalk checks the file and shows its "파일 전송" window (KakaoTalk 26.8, 2026-11-24: EVA_Window,
+        // 300x207 for one file, owned by the chat, or by the 열기 window while that is still open). Nothing has
+        // gone out yet.
+        IntPtr? FindFileSheet() => KakaoWindows(kakao)
+            .Where(h => !beforeOpen.Contains(h) && h != dialog && h != chat)
+            .Where(h => Native.GetWindow(h, Native.GW_OWNER) is var owner && (owner == chat || owner == dialog))
+            .Select(h => (IntPtr?)h).FirstOrDefault();
+        var sheet = await WaitForAsync<IntPtr>(8000, FindFileSheet);
+        bool DialogOpen() => Native.IsWindow(dialog) && Native.IsWindowVisible(dialog);
+        // A Windows message box from the 열기 window itself (#32770 it owns, e.g. "경로가 없습니다"): it refused
+        // the path, so nothing was chosen and nothing went out.
+        if (sheet is IntPtr box && Native.ClassName(box) == "#32770" && Native.GetWindow(box, Native.GW_OWNER) == dialog)
+        {
+            log($"  파일 선택 창이 오류 창을 띄움 0x{box:X} {Native.WindowRect(box).Width}x{Native.WindowRect(box).Height} → 닫음");
+            Native.PostMessage(box, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            await WaitForAsync(3000, () => Native.IsWindow(box) && Native.IsWindowVisible(box) ? null : (bool?)true);
+            return ("파일 선택 창이 파일 경로를 받지 않음", !await CancelSheetAsync(dialog));
+        }
+        if (sheet is not IntPtr window)
+        {
+            var closed = await CloseLeftoversAsync(kakao, chat, beforeOpen, "열기 뒤", log);
+            // The dialog still open: it did not take the path, so nothing was chosen and nothing went out.
+            if (DialogOpen()) return ("열기를 눌러도 파일 선택 창이 남음 (파일을 받지 않음)", !(await CancelSheetAsync(dialog) && closed));
+            // KakaoTalk has always asked first: no window at all leaves it unknown whether it sent at once.
+            return ("열기 뒤 파일 전송 창이 뜨지 않음", true);
+        }
+        var rect = Native.WindowRect(window);
+        log($"  파일 전송 창 0x{window:X} {Native.ClassName(window)} {rect.Width}x{rect.Height}, 소유 창 {(Native.GetWindow(window, Native.GW_OWNER) == chat ? "채팅창" : "파일 선택 창")}");
+        var (problem, unsure) = await PressFileSheetAsync(window, log);
+        // The 열기 window goes away with the 파일 전송 window; if it stays, it is cancelled (our path is in it).
+        if (await WaitForAsync(3000, () => DialogOpen() ? null : (bool?)true) is null && !await CancelSheetAsync(dialog))
+            return (problem ?? "파일 선택 창이 닫히지 않음", true);
+        if (problem is not null) return (problem, unsure);
+        await WaitUploadAsync(item, log);
+        return (null, false);
+    }
+
+    /// <summary>
+    /// KakaoTalk's "파일 전송" window: read with Windows OCR. "전송 불가" (e.g. "열 수 없는 파일") means KakaoTalk
+    /// refused the file: closed, nothing went out. Otherwise the word "전송" (or "보내기") standing alone is the
+    /// button (the title "파일 전송" and "전송 가능 1" are longer), clicked; the window closing means it was sent.
+    /// OCR text is never logged: it holds the file's name.
+    /// </summary>
+    static async Task<(string? problem, bool unsure)> PressFileSheetAsync(IntPtr window, Action<string> log)
+    {
+        async Task<bool> Close()
+        {
+            Native.PostMessage(window, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            return await WaitForAsync(3000, () => Native.IsWindow(window) && Native.IsWindowVisible(window) ? null : (bool?)true) is not null;
+        }
+        static string Plain(string s) => s.Replace(" ", "");
+
+        List<OcrLine> words = new(), lines = new();
+        Rectangle capture = Rectangle.Empty;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            await Task.Delay(400, CancellationToken.None); // drawn a moment after it appears
+            try
+            {
+                using var img = Capture.Window(window);
+                if (img is null) continue;
+                capture = new Rectangle(Point.Empty, img.Size);
+                lines = await Ocr.RecognizeAsync(img, 2f);
+                words = await Ocr.RecognizeWordsAsync(img, 2f);
+            }
+            catch (Exception ex) { log("  파일 전송 창 글자를 읽지 못함: " + ex.Message); }
+            if (lines.Count > 0) break;
+        }
+        if (lines.Count == 0) return ("파일 전송 창의 글자를 읽지 못함", !await Close());
+        if (lines.Any(l => Plain(l.Text).Contains("전송불가") || Plain(l.Text).Contains("열수없")))
+        {
+            log("  카카오톡이 파일을 받지 않음 (전송 불가)");
+            return ("카카오톡이 파일을 받지 않음 (열 수 없는 파일 등)", !await Close());
+        }
+        // The button sits in the lower part; a word "전송" alone there (never one that also says 취소/확인/닫기).
+        var button = words.Concat(lines)
+            .Where(w => w.Bounds.Top > capture.Height / 3 && Plain(w.Text) is "전송" or "보내기")
+            .OrderByDescending(w => w.Bounds.Top).FirstOrDefault();
+        if (button is null)
+        {
+            log($"  파일 전송 창에서 전송 버튼 글자를 찾지 못함 (읽은 줄 {lines.Count}개)");
+            return ("파일 전송 창의 전송 버튼을 찾지 못함", !await Close());
+        }
+        var rect = Native.WindowRect(window);
+        var pt = new Native.POINT { X = rect.Left + button.Bounds.Left + button.Bounds.Width / 2, Y = rect.Top + button.Bounds.Top + button.Bounds.Height / 2 };
+        Native.ScreenToClient(window, ref pt);
+        log($"  파일 전송 버튼 {pt.X},{pt.Y}");
+        FriendListReader.Click(window, pt.X, pt.Y);
+        if (await WaitForAsync(8000, () => Native.IsWindow(window) && Native.IsWindowVisible(window) ? null : (bool?)true) is null)
+        {
+            // Still open after the click: it may still have sent (closing late), so the outcome is unknown.
+            await Close();
+            return ("전송 버튼을 눌러도 파일 전송 창이 남음", true);
+        }
+        return (null, false);
+    }
+
+    /// <summary>The 파일 이름 box of a Windows open dialog: the Edit in combo 1148 (Vista style), else Edit 1152 (old style).</summary>
+    static IntPtr FileNameBox(IntPtr dialog)
+    {
+        var all = Native.ChildWindows(dialog);
+        var combo = all.FirstOrDefault(h => Native.GetParent(h) == dialog && Native.GetDlgCtrlID(h) == 1148 && Native.ClassName(h) == "ComboBoxEx32");
+        if (combo != IntPtr.Zero)
+            return Native.ChildWindows(combo).FirstOrDefault(h => Native.ClassName(h) == "Edit");
+        return all.FirstOrDefault(h => Native.GetParent(h) == dialog && Native.GetDlgCtrlID(h) == 1152 && Native.ClassName(h) == "Edit");
+    }
+
+    /// <summary>
+    /// The window KakaoTalk shows to send an image or file: a new window owned by this chat, or else the only new
+    /// window, sitting over the chat and big enough for a preview (a message notification pops up small, at the
+    /// screen corner), so a notification popping up meanwhile is not clicked.
+    /// </summary>
+    static IntPtr? FindSheet(KakaoWindow kakao, IntPtr chat, HashSet<IntPtr> before)
+    {
+        var fresh = KakaoWindows(kakao).Where(h => !before.Contains(h) && h != chat).ToList();
+        var owned = fresh.Where(h => Native.GetWindow(h, Native.GW_OWNER) == chat).ToList();
+        if (owned.Count == 1) return owned[0];
+        if (owned.Count > 1 || fresh.Count != 1) return null;
+        var r = Native.WindowRect(fresh[0]);
+        var chatRect = Native.WindowRect(chat);
+        var center = new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+        return chatRect.Contains(center) && r.Width >= 200 && r.Height >= 150 ? fresh[0] : null;
+    }
+
+    /// <summary>
+    /// Closes every window that appeared since `before` (one we did not recognise must not stay open for a stray
+    /// Enter to answer; closing a notification does no harm). False if one stays open.
+    /// </summary>
+    static async Task<bool> CloseLeftoversAsync(KakaoWindow kakao, IntPtr chat, HashSet<IntPtr> before, string when, Action<string> log)
+    {
+        var leftovers = KakaoWindows(kakao).Where(h => !before.Contains(h) && h != chat).ToList();
+        foreach (var h in leftovers)
+        {
+            var r = Native.WindowRect(h);
+            log($"  {when} 뜬 창 0x{h:X} {Native.ClassName(h)} 제목 {Native.WindowText(h).Length}자 {r.Width}x{r.Height}, 소유 창 0x{Native.GetWindow(h, Native.GW_OWNER):X} → 닫음");
+            Native.PostMessage(h, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+        }
+        return leftovers.Count == 0
+            || await WaitForAsync(3000, () => leftovers.Any(h => Native.IsWindow(h) && Native.IsWindowVisible(h)) ? null : (bool?)true) is not null;
+    }
+
+    /// <summary>A posted Ctrl+key that arrived as a plain letter: one character with the button lit is ours and is cleared.</summary>
+    static void ClearStrayKey(IntPtr chat, IntPtr input, Action<string> log)
+    {
+        if (SendButtonLit(chat) != true) return;
+        if (Native.GetText(input).Length == 1)
+        {
+            log("  키가 입력창에 글자로 들어가 지움");
+            Native.ClearText(input);
+        }
+        else log("  입력창에 글이 있어 그대로 둠");
+    }
+
+    /// <summary>
+    /// Presses "전송" in the image-send window; the window closing means it was sent.
+    /// </summary>
+    static async Task<(string? problem, bool unsure)> PressSheetSendAsync(IntPtr window, Pasted item, Action<string> log)
+    {
+        var what = item.What;
         Point? button = null;
         for (int i = 0; i < 10 && button is null; i++)
         {
             button = FindSheetSendButton(window);
-            if (button is null) await Task.Delay(150, ct);
+            if (button is null) await Task.Delay(150, CancellationToken.None);
         }
         if (button is not Point click)
             return ($"{what} 창의 전송 버튼을 찾지 못함", !await CancelSheetAsync(window));
         log($"  {what} 전송 버튼 {click.X},{click.Y}");
-        // The file window has not been seen yet, and a "취소" or "확인" button would look the same to the finder:
-        // read the label first and press only "전송".
-        if (item.FileName is not null && !await LabelSaysSend(window, click, log))
-            return ("파일 창의 버튼 글자가 \"전송\"이 아님", !await CancelSheetAsync(window));
         FriendListReader.Click(window, click.X, click.Y);
         if (await WaitForAsync(8000, () => Native.IsWindow(window) && Native.IsWindowVisible(window) ? null : (bool?)true) is null)
         {
@@ -362,45 +529,15 @@ static class KakaoSender
             await CancelSheetAsync(window);
             return ($"전송 버튼을 눌러도 {what} 창이 남음", true);
         }
-        var wait = (int)Math.Min(item.MaxUploadWaitMs, 3000 + item.Size / 150); // ~150 KB/s
-        log($"  {what} 보냄, 업로드 {wait / 1000.0:F1}초 기다림");
-        await Task.Delay(wait, ct);
         return (null, false);
     }
 
-    /// <summary>Reads the label around a point (client coordinates) of a window with Windows OCR: is it "전송"?</summary>
-    static async Task<bool> LabelSaysSend(IntPtr window, Point clientPoint, Action<string> log)
+    /// <summary>Gives the upload time (closing the chat during one drops it); no readable progress, so it grows with the size.</summary>
+    static async Task WaitUploadAsync(Pasted item, Action<string> log)
     {
-        try
-        {
-            using var img = Capture.Window(window);
-            if (img is null) return false;
-            var s = Native.GetDpiForWindow(window) / 96.0;
-            var rect = Native.WindowRect(window);
-            var pt = new Native.POINT { X = clientPoint.X, Y = clientPoint.Y };
-            Native.ClientToScreen(window, ref pt);
-            int x = pt.X - rect.Left, y = pt.Y - rect.Top; // capture coordinates
-            var region = new Rectangle(x - (int)(60 * s), y - (int)(18 * s), (int)(120 * s), (int)(36 * s));
-            var lines = await Ocr.RecognizeStripAsync(img, region, 3f);
-            log($"  버튼 주변 글자: {string.Join(" | ", lines.Select(l => $"'{l.Text}'"))}");
-            // Only the line under (or nearest to) the click point counts, so "전송" beside a "취소" being clicked
-            // does not pass; and a line that also says 취소/확인/닫기 is never taken.
-            var under = lines.OrderBy(l =>
-            {
-                int dx = Math.Max(0, Math.Max(l.Bounds.Left - x, x - l.Bounds.Right));
-                int dy = Math.Max(0, Math.Max(l.Bounds.Top - y, y - l.Bounds.Bottom));
-                return dx * dx + dy * dy;
-            }).FirstOrDefault();
-            if (under is null) return false;
-            var text = under.Text.Replace(" ", "");
-            if (text.Contains("취소") || text.Contains("확인") || text.Contains("닫기")) return false;
-            return text.Contains("전송") || text.Contains("보내기");
-        }
-        catch (Exception ex)
-        {
-            log("  버튼 글자를 읽지 못함: " + ex.Message);
-            return false;
-        }
+        var wait = (int)Math.Min(item.MaxUploadWaitMs, 3000 + item.Size / 150); // ~150 KB/s
+        log($"  {item.What} 보냄, 업로드 {wait / 1000.0:F1}초 기다림");
+        await Task.Delay(wait, CancellationToken.None);
     }
 
     /// <summary>Closes the image-send window without sending (its own close = 취소). False if it stays open.</summary>

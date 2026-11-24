@@ -147,6 +147,9 @@ static class Native
     public const uint WM_PASTE = 0x0302;
     public const uint GW_OWNER = 4;
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+    [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr hwnd);
+    public const uint WM_COMMAND = 0x0111;
+    public const int IDOK = 1;
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
 
     [StructLayout(LayoutKind.Sequential)]
