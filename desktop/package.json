@@ -47,6 +47,7 @@
         }
       ],
       "category": "public.app-category.productivity",
+      "identity": "-",
       "icon": "icons/icon.png",
       "extendInfo": {
         "CFBundleDisplayName": "한평생톡"
