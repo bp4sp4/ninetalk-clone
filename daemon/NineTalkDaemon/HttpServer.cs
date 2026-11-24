@@ -12,7 +12,7 @@ namespace NineTalkDaemon;
 sealed class HttpServer : IDisposable
 {
     public const int Port = 47301;
-    public const string Version = "0.1.5";
+    public const string Version = "0.1.6";
 
     static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -85,12 +85,12 @@ sealed class HttpServer : IDisposable
                 case ("GET", "/status"):
                     if (sender.IsRunning)
                     {
-                        await Send(res, origin, 200, new { status = "SendMessage", version = Version, images = true, current_sent_order = sender.Processed, last_error = (string?)null });
+                        await Send(res, origin, 200, new { status = "SendMessage", version = Version, images = true, files = true, current_sent_order = sender.Processed, last_error = (string?)null });
                         break;
                     }
                     var (status, count, error) = sync.Status();
-                    // images: this PC program can send images (POST /send "images").
-                    await Send(res, origin, 200, new { status, version = Version, images = true, current_sync_cnt = count, last_error = error });
+                    // images / files: this PC program can send images and other files (POST /send "images", "files").
+                    await Send(res, origin, 200, new { status, version = Version, images = true, files = true, current_sync_cnt = count, last_error = error });
                     break;
 
                 case ("POST", "/send"):
@@ -203,19 +203,57 @@ sealed class HttpServer : IDisposable
             await Send(res, origin, 400, new { ok = false, error = imageError });
             return;
         }
-        if (images.Count == 0 && recipients.Any(r => string.IsNullOrWhiteSpace(r.Text)))
+        var (files, fileError) = DecodeFiles(body.Files);
+        if (fileError is not null)
+        {
+            await Send(res, origin, 400, new { ok = false, error = fileError });
+            return;
+        }
+        if (images.Count + files.Count > MaxAttachments)
+        {
+            await Send(res, origin, 400, new { ok = false, error = $"at most {MaxAttachments} attachments" });
+            return;
+        }
+        if (images.Count + files.Count == 0 && recipients.Any(r => string.IsNullOrWhiteSpace(r.Text)))
         {
             await Send(res, origin, 400, new { ok = false, error = "text or images required" });
             return;
         }
         var refused = sender.TryStart(body.JobId, recipients.Select(r => new SendService.Recipient(r.Id, r.Name!.Trim(), r.Text)).ToList(),
             SendService.Settings.From(body.IntervalMs, body.SpeedRate, body.SplitSendCount, body.SendMode),
-            attachments: new SendService.Attachments(images, body.ImageFirst));
+            attachments: new SendService.Attachments(images, files, body.ImageFirst));
         if (refused is null) await Send(res, origin, 202, new { ok = true });
         else await Send(res, origin, 409, new { ok = false, status = refused });
     }
 
-    const int MaxImages = 5, MaxImageBytes = 10 * 1024 * 1024;
+    const int MaxImages = 5, MaxImageBytes = 10 * 1024 * 1024, MaxAttachments = 5, MaxFileBytes = 20 * 1024 * 1024;
+    /// <summary>Programs and scripts are never sent (the dashboard refuses them too).</summary>
+    static readonly HashSet<string> BlockedExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".dll", ".lnk", ".app", ".pkg", ".dmg", ".sh" };
+
+    /// <summary>
+    /// Base64 files from POST /send. The name is what the recipient sees, so it is kept, but only as a plain
+    /// file name: no folders, no characters Windows does not allow, no program types.
+    /// </summary>
+    static (List<SendService.SendFile> files, string? error) DecodeFiles(List<SendImage>? files)
+    {
+        var list = new List<SendService.SendFile>();
+        if (files is not { Count: > 0 }) return (list, null);
+        if (files.Count > MaxAttachments) return (list, $"at most {MaxAttachments} attachments");
+        foreach (var file in files)
+        {
+            var name = Path.GetFileName((file.Name ?? "").Replace('/', '\\'));
+            foreach (var bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
+            name = name.Trim().TrimEnd('.');
+            if (name.Length == 0 || name.Length > 150 || BlockedExtensions.Contains(Path.GetExtension(name))) return (list, "file name not allowed");
+            byte[] data;
+            try { data = Convert.FromBase64String(file.DataBase64 ?? ""); }
+            catch (FormatException) { return (list, "file too large or empty"); }
+            if (data.Length == 0 || data.Length > MaxFileBytes) return (list, "file too large or empty");
+            list.Add(new SendService.SendFile(name, data));
+        }
+        return (list, null);
+    }
     static readonly HashSet<string> ImageMimes = new(StringComparer.OrdinalIgnoreCase) { "image/png", "image/jpeg", "image/jpg", "image/gif", "image/bmp" };
 
     /// <summary>Base64 images from POST /send, checked to be small images this PC can decode (no WebP/HEIC).</summary>
@@ -240,7 +278,7 @@ sealed class HttpServer : IDisposable
     sealed record SendRecipient(long Id, string? Name, string? Text);
     sealed record SendImage(string? Name, string? Mime, string? DataBase64);
     sealed record SendRequest(
-        long JobId, List<SendRecipient>? Recipients, List<SendImage>? Images, bool ImageFirst,
+        long JobId, List<SendRecipient>? Recipients, List<SendImage>? Images, List<SendImage>? Files, bool ImageFirst,
         int? SpeedRate, int? SplitSendCount, int? IntervalMs, string? SendMode);
 
     static async Task Send(HttpListenerResponse res, string? origin, int code, object? body)

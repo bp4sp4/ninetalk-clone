@@ -13,7 +13,7 @@ namespace NineTalkDaemon;
 ///    afterwards confirms the send.
 /// 5. Images (if any, before or after the text): each goes on the clipboard and is pasted into the chat;
 ///    KakaoTalk shows its image-send window, whose yellow "전송" button is clicked (WM_CLOSE in dry-run).
-///    See <see cref="SendImageAsync"/>; this part is not verified on a real PC yet.
+///    Files the same way after the images. See <see cref="SendPastedAsync"/>.
 /// 6. The chat window is closed (WM_CLOSE) unless it was already open before. If KakaoTalk asks something
 ///    instead (an image still uploading), the chat is left open and the question untouched.
 ///
@@ -28,8 +28,8 @@ static class KakaoSender
     /// Returns null when everything went out (or, in dry-run, would have), otherwise an error code. Once a
     /// part has gone out a later failure is "partial_sent", so the dashboard does not send it all again.
     /// </summary>
-    public static async Task<string?> SendOneAsync(KakaoWindow kakao, string name, string text, IReadOnlyList<byte[]> images, bool imageFirst,
-        bool dryRun, Action<string> log, CancellationToken ct)
+    public static async Task<string?> SendOneAsync(KakaoWindow kakao, string name, string text, IReadOnlyList<byte[]> images,
+        IReadOnlyList<string> filePaths, bool imageFirst, bool dryRun, Action<string> log, CancellationToken ct)
     {
         var s = Native.GetDpiForWindow(kakao.Main) / 96.0;
         int S(int v) => (int)Math.Round(v * s);
@@ -164,25 +164,28 @@ static class KakaoSender
                     return Failed("전송 버튼을 누른 뒤에도 버튼이 활성 상태로 남음");
                 }
 
-                var clipboard = images.Count > 0 ? ClipboardImage.Save() : null;
+                // Images first, then files, each pasted on its own.
+                var pastes = images.Select(ImagePaste).Concat(filePaths.Select(FilePaste)).ToList();
+                var clipboard = pastes.Count > 0 ? ClipboardImage.Save() : null;
                 try
                 {
                     var steps = new List<Func<Task<string?>>>();
                     if (!imageFirst && text.Length > 0) steps.Add(TextStep);
-                    for (int n = 0; n < images.Count; n++)
+                    for (int n = 0; n < pastes.Count; n++)
                     {
-                        var (image, index) = (images[n], n + 1);
+                        var item = pastes[n];
+                        var label = $"{item.What} {pastes.Take(n + 1).Count(p => p.What == item.What)}";
                         steps.Add(async () =>
                         {
-                            var (problem, unsure) = await SendImageAsync(kakao, chat, input, image, clipboard!, dryRun, log);
+                            var (problem, unsure) = await SendPastedAsync(kakao, chat, input, item, clipboard!, dryRun, log);
                             if (problem is not null && unsure)
                             {
-                                // A KakaoTalk window we could not close is left in this chat: whether it went out
-                                // is unknown, and it must not be offered for sending again.
-                                log($"  이미지 {index}: {problem} (보냈는지 알 수 없음)");
+                                // Whether it went out is unknown (a window left over, or a file with no window):
+                                // it must not be offered for sending again.
+                                log($"  {label}: {problem} (보냈는지 알 수 없음)");
                                 return "unknown_result";
                             }
-                            if (problem is not null) return Failed($"이미지 {index}: {problem}");
+                            if (problem is not null) return Failed($"{label}: {problem}");
                             if (!dryRun) sentSteps++;
                             return null;
                         });
@@ -217,12 +220,21 @@ static class KakaoSender
         }
     }
 
+    /// <summary>One thing to paste into the chat: an image or a file.</summary>
+    sealed record Pasted(string What, Func<ClipboardImage, bool> Put, long Size, int MaxUploadWaitMs, string? FileName);
+
+    static Pasted ImagePaste(byte[] image) => new("이미지", clipboard => clipboard.Put(image), image.Length, 60000, null);
+    static Pasted FilePaste(string path) =>
+        new("파일", clipboard => clipboard.PutFile(path), new FileInfo(path).Length, 120000, Path.GetFileName(path));
+
     /// <summary>
-    /// Pastes one image into the chat and sends it from KakaoTalk's image-send window. Returns null when it
-    /// went out (dry-run: when the window appeared and was cancelled), otherwise what went wrong; `unsure`
-    /// means a KakaoTalk window we could not close is left over, so it is unknown whether something went out.
+    /// Pastes one image or file into the chat and sends it from the window KakaoTalk shows for it. Returns null
+    /// when it went out (dry-run: when the window appeared and was cancelled), otherwise what went wrong;
+    /// `unsure` means it is unknown whether something went out (a window we could not close is left over, or,
+    /// for a file, no window appeared and nothing shows the paste was refused).
     ///
-    /// 1. The image goes on the clipboard and Ctrl+V is posted to the chat input only (Native.PostCtrlKey).
+    /// 1. It goes on the clipboard (an image as a bitmap, a file the way Explorer copies one) and Ctrl+V is
+    ///    posted to the chat input only (Native.PostCtrlKey).
     ///    No global key input: a real Ctrl+V could land in whatever program the user is typing in.
     /// 2. The image-send window is a new window owned by this chat, or the only new one sitting over the chat
     ///    with a preview's size, so a message notification popping up meanwhile is not clicked. Its yellow
@@ -230,11 +242,12 @@ static class KakaoSender
     /// 3. The upload is given time before moving on (closing the chat during an upload drops the image);
     ///    KakaoTalk shows no progress that can be read, so the wait grows with the image size.
     /// </summary>
-    static async Task<(string? problem, bool unsure)> SendImageAsync(KakaoWindow kakao, IntPtr chat, IntPtr input, byte[] image,
+    static async Task<(string? problem, bool unsure)> SendPastedAsync(KakaoWindow kakao, IntPtr chat, IntPtr input, Pasted item,
         ClipboardImage clipboard, bool dryRun, Action<string> log)
     {
         var ct = CancellationToken.None; // a paste in flight is always finished or cancelled, never abandoned
-        if (!clipboard.Put(image)) return ("클립보드에 이미지를 넣지 못함", false);
+        var what = item.What;
+        if (!item.Put(clipboard)) return ($"클립보드에 {what}을 넣지 못함", false);
 
         var before = KakaoWindows(kakao).ToHashSet();
         List<IntPtr> Fresh() => KakaoWindows(kakao).Where(h => !before.Contains(h) && h != chat).ToList();
@@ -272,24 +285,32 @@ static class KakaoSender
             // The key may have arrived as a plain "v" ("ㅍ" in Korean input), or the image went into the box as one
             // embedded object. Cleared only when the box now holds exactly one character and the button lit up:
             // anything longer could be a draft drawn late or something the user typed, and is left alone.
+            // A file may also have gone in as its path or name: that text is ours too.
+            bool landedInBox = false;
             if (SendButtonLit(chat) == true)
             {
-                if (Native.GetText(input).Length == 1)
+                var boxText = Native.GetText(input);
+                if (boxText.Length == 1 || item.FileName is { Length: > 0 } name && boxText.Contains(name, StringComparison.OrdinalIgnoreCase))
                 {
-                    log("  붙여넣기가 입력창에 한 글자로 들어가 지움");
+                    log("  붙여넣기가 입력창에 글자로 들어가 지움");
                     Native.ClearText(input);
+                    landedInBox = true;
                 }
                 else log("  붙여넣은 뒤 입력창에 글이 있어 그대로 둠");
             }
-            return leftOpen ? ("붙여넣은 뒤 뜬 창이 닫히지 않음", true) : ("이미지 전송 창이 뜨지 않음", false);
+            if (leftOpen) return ("붙여넣은 뒤 뜬 창이 닫히지 않음", true);
+            // An image always gets a window first. A file might be sent straight away without one, so no window
+            // (and no text in the box) leaves it unknown whether it went out: never offered for sending again.
+            if (item.FileName is not null && !landedInBox) return ($"{what} 전송 창이 뜨지 않음 (바로 보내졌을 수 있음)", true);
+            return ($"{what} 전송 창이 뜨지 않음", false);
         }
         var rect = Native.WindowRect(window);
-        log($"  이미지 창 0x{window:X} {Native.ClassName(window)} 제목 {Native.WindowText(window).Length}자 {rect.Width}x{rect.Height}, 소유 창 0x{Native.GetWindow(window, Native.GW_OWNER):X}");
+        log($"  {what} 창 0x{window:X} {Native.ClassName(window)} 제목 {Native.WindowText(window).Length}자 {rect.Width}x{rect.Height}, 소유 창 0x{Native.GetWindow(window, Native.GW_OWNER):X}");
 
         if (dryRun)
         {
             await Task.Delay(1000, ct); // time to look at it
-            return await CancelSheetAsync(window) ? (null, false) : ("이미지 창이 닫히지 않음", true);
+            return await CancelSheetAsync(window) ? (null, false) : ($"{what} 창이 닫히지 않음", true);
         }
 
         Point? button = null;
@@ -299,18 +320,18 @@ static class KakaoSender
             if (button is null) await Task.Delay(150, ct);
         }
         if (button is not Point click)
-            return ("이미지 창의 전송 버튼을 찾지 못함", !await CancelSheetAsync(window));
-        log($"  이미지 전송 버튼 {click.X},{click.Y}");
+            return ($"{what} 창의 전송 버튼을 찾지 못함", !await CancelSheetAsync(window));
+        log($"  {what} 전송 버튼 {click.X},{click.Y}");
         FriendListReader.Click(window, click.X, click.Y);
         if (await WaitForAsync(8000, () => Native.IsWindow(window) && Native.IsWindowVisible(window) ? null : (bool?)true) is null)
         {
             // Still open after the click. Cancel so it does not stay for a stray Enter to send, but the click may
             // already have sent it (KakaoTalk closing the window late), so the outcome is unknown either way.
             await CancelSheetAsync(window);
-            return ("전송 버튼을 눌러도 이미지 창이 남음", true);
+            return ($"전송 버튼을 눌러도 {what} 창이 남음", true);
         }
-        var wait = Math.Min(60000, 3000 + image.Length / 150); // ~150 KB/s, at most a minute
-        log($"  이미지 보냄, 업로드 {wait / 1000.0:F1}초 기다림");
+        var wait = (int)Math.Min(item.MaxUploadWaitMs, 3000 + item.Size / 150); // ~150 KB/s
+        log($"  {what} 보냄, 업로드 {wait / 1000.0:F1}초 기다림");
         await Task.Delay(wait, ct);
         return (null, false);
     }

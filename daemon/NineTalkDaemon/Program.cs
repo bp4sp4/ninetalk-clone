@@ -21,15 +21,19 @@ static class Program
             return;
         }
 
-        // --send-test <name> <text> [--image <file>]... [--image-first] [--send]: one recipient through the
+        // --send-test <name> <text> [--image <file>]... [--file <file>]... [--image-first] [--send]: one recipient through the
         // same code as POST /send. Dry-run (puts the text in and clears it, opens the image window and cancels
         // it) unless --send is given. Text "" sends only the images.
         if (args.Length > 2 && args[0] == "--send-test")
         {
             var images = new List<byte[]>();
+            var files = new List<SendService.SendFile>();
             for (int i = 3; i < args.Length - 1; i++)
+            {
                 if (args[i] == "--image") images.Add(File.ReadAllBytes(args[i + 1]));
-            SendTest(args[1], args[2], dryRun: !args.Contains("--send"), new SendService.Attachments(images, args.Contains("--image-first")));
+                if (args[i] == "--file") files.Add(new SendService.SendFile(Path.GetFileName(args[i + 1]), File.ReadAllBytes(args[i + 1])));
+            }
+            SendTest(args[1], args[2], dryRun: !args.Contains("--send"), new SendService.Attachments(images, files, args.Contains("--image-first")));
             return;
         }
 

@@ -123,6 +123,7 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       if (!Array.isArray(body.recipients) || body.recipients.length === 0) return send(res, origin, 400, { ok: false, error: "recipients required" });
       if (Array.isArray(body.images) && body.images.length > 0) return send(res, origin, 400, { ok: false, error: "images_not_supported" });
+      if (Array.isArray(body.files) && body.files.length > 0) return send(res, origin, 400, { ok: false, error: "files_not_supported" });
       if (state.status !== "Ready") return send(res, origin, 409, { ok: false, status: state.status });
       startSendJob(body);
       return send(res, origin, 202, { ok: true });

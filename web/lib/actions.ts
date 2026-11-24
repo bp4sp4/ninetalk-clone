@@ -3,6 +3,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { refresh } from "next/cache";
+import { MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentProblem, isImageType } from "./attachments";
 import { requireUser } from "./auth";
 import { DATA_DIR, db, transaction } from "./db";
 import { NAME_TOKEN, renderMessage } from "./message";
@@ -22,9 +23,6 @@ export type ActionResult = { ok: true; message?: string; id?: number } | { ok: f
 
 const MAX_NAME_LENGTH = 50;
 const MAX_FRIENDS_PER_IMPORT = 5000;
-const MAX_FILES = 5;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 const isSenderType = (value: unknown): value is SenderType => value === "Honorific" || value === "TalkDown";
 
@@ -235,12 +233,15 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
   const friendIds = ownedIds("friends", user.id, formData.getAll("friendIds").map(Number));
   const files = formData.getAll("files").filter((file): file is File => file instanceof File && file.size > 0);
 
-  if (!honorific && files.length === 0) return { ok: false, error: "메시지 내용이나 이미지를 넣어 주세요." };
+  if (!honorific && files.length === 0) return { ok: false, error: "메시지 내용이나 첨부 파일을 넣어 주세요." };
   if (honorific.length > 2000 || talkdown.length > 2000) return { ok: false, error: "메시지는 2000자까지 입력할 수 있습니다." };
-  if (files.length > MAX_FILES) return { ok: false, error: `이미지는 ${MAX_FILES}장까지 첨부할 수 있습니다.` };
+  if (files.length > MAX_ATTACHMENTS) return { ok: false, error: `사진·파일은 ${MAX_ATTACHMENTS}개까지 첨부할 수 있습니다.` };
   for (const file of files) {
-    if (!IMAGE_TYPES.has(file.type)) return { ok: false, error: `이미지 파일만 첨부할 수 있습니다: ${file.name}` };
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: `5MB 이하 이미지만 첨부할 수 있습니다: ${file.name}` };
+    const problem = attachmentProblem(file);
+    if (problem) return { ok: false, error: problem };
+  }
+  if (files.reduce((sum, file) => sum + file.size, 0) > MAX_TOTAL_BYTES) {
+    return { ok: false, error: "첨부한 사진·파일은 합쳐서 25MB까지입니다." };
   }
 
   // Recipients: members of the chosen groups plus individually chosen friends, each friend once.
@@ -260,7 +261,7 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
     .prepare(`SELECT id, name, sender_type FROM friends WHERE user_id = ? AND id IN (${placeholders}) ORDER BY name`)
     .all(user.id, ...recipientIds) as { id: number; name: string; sender_type: SenderType }[];
 
-  const firstLine = (honorific.split(/\r?\n/)[0] || "이미지 메시지").replaceAll(NAME_TOKEN, "○○").slice(0, 40);
+  const firstLine = (honorific.split(/\r?\n/)[0] || (files.some((file) => !isImageType(file.type)) ? "파일 메시지" : "이미지 메시지")).replaceAll(NAME_TOKEN, "○○").slice(0, 40);
 
   const jobId = transaction(() => {
     const { id } = db
@@ -294,10 +295,11 @@ export async function createSendJob(formData: FormData): Promise<ActionResult> {
     await mkdir(dir, { recursive: true });
     const insertFile = db.prepare("INSERT INTO send_job_files (job_id, file_name, mime, size, path) VALUES (?, ?, ?, ?, ?)");
     for (const [index, file] of files.entries()) {
-      const fileName = `${index + 1}-${safeFileName(file.name)}`;
+      const fileName = `${index + 1}-${safeFileName(file.name)}`; // on disk only; the original name is kept below
       const filePath = path.join(dir, fileName);
       await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
-      insertFile.run(jobId, file.name, file.type, file.size, path.relative(DATA_DIR, filePath));
+      // A file without a type (some browsers for .hwp) is stored as a plain file.
+      insertFile.run(jobId, file.name, file.type || "application/octet-stream", file.size, path.relative(DATA_DIR, filePath));
     }
   }
 
@@ -311,6 +313,9 @@ export type SendPayload = {
   job_id: number;
   recipients: { id: number; name: string; text: string }[];
   images: { name: string; mime: string; data_base64: string }[];
+  /** Other attachments, sent as KakaoTalk files after the images; only PC programs with "files" in /status take them. */
+  files: { name: string; mime: string; data_base64: string }[];
+  /** Images and files before the text. */
   image_first: boolean;
   /** Old 1~5 speed, still sent for PC programs that do not read interval_ms. */
   speed_rate: number;
@@ -365,7 +370,7 @@ export async function getSendPayload(jobId: number): Promise<{ ok: true; payload
     mime: string;
     path: string;
   }[];
-  const images = await Promise.all(
+  const attachments = await Promise.all(
     files.map(async (file) => ({
       name: file.file_name,
       mime: file.mime,
@@ -380,7 +385,8 @@ export async function getSendPayload(jobId: number): Promise<{ ok: true; payload
     payload: {
       job_id: jobId,
       recipients: recipients.map((row) => ({ id: row.id, name: row.name, text: row.text })),
-      images,
+      images: attachments.filter((file) => isImageType(file.mime)),
+      files: attachments.filter((file) => !isImageType(file.mime)),
       image_first: job.image_first === 1,
       speed_rate: job.speed_rate,
       split_send_count: job.split_send_count,

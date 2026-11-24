@@ -68,7 +68,25 @@ sealed class ClipboardImage
         catch { return false; }
     });
 
-    /// <summary>Puts the saved clipboard back, unless the user copied something after our last image.</summary>
+    /// <summary>
+    /// Puts one file on the clipboard the way Explorer's Copy does (a file list plus "copy" as the drop effect),
+    /// so pasting it into a chat attaches the file itself.
+    /// </summary>
+    public bool PutFile(string path) => Sta(() =>
+    {
+        try
+        {
+            var data = new DataObject();
+            data.SetFileDropList(new System.Collections.Specialized.StringCollection { path });
+            data.SetData("Preferred DropEffect", false, new MemoryStream(BitConverter.GetBytes((int)DragDropEffects.Copy)));
+            Clipboard.SetDataObject(data, true, 10, 100);
+            ourSequence = Native.GetClipboardSequenceNumber();
+            return true;
+        }
+        catch { return false; }
+    });
+
+    /// <summary>Puts the saved clipboard back, unless the user copied something after our last image or file.</summary>
     public void Restore()
     {
         if (restored) return;
