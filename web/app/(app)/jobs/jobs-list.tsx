@@ -43,6 +43,13 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
   const { pending, notice, setNotice, run } = useAction();
   const [active, setActive] = useState<ActiveRun | null>(null);
   const [starting, setStarting] = useState(false);
+  // Whether the PC program can send images (the Mac one can; the Windows one cannot yet). null = unknown.
+  const [imagesSupported, setImagesSupported] = useState<boolean | null>(null);
+  useEffect(() => {
+    getDaemonStatus()
+      .then((status) => setImagesSupported(status.images === true))
+      .catch(() => setImagesSupported(null));
+  }, []);
   // Results already written to the server for the active run (the daemon returns the whole list each time).
   const recorded = useRef(0);
   const polling = useRef(false);
@@ -115,9 +122,25 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
 
   const start = async (job: JobSummary) => {
     const remaining = job.total - job.sent - job.failed;
+    if (job.fileCount > 0) {
+      // Ask before the confirm dialog: a request the PC program would refuse should not ask "send?" first.
+      const supported = await getDaemonStatus()
+        .then((status) => status.images === true)
+        .catch(() => null);
+      // null: the PC program did not answer — that says nothing about images, so the button stays usable.
+      setImagesSupported(supported);
+      if (supported === null) {
+        setNotice({ tone: "error", text: "PC 프로그램이 켜져 있지 않습니다. PC 프로그램을 실행한 뒤 다시 눌러 주세요." });
+        return;
+      }
+      if (!supported) {
+        setNotice({ tone: "error", text: "이 PC 프로그램은 아직 이미지를 보낼 수 없습니다(지금은 맥 PC 프로그램만 지원)." });
+        return;
+      }
+    }
     if (
       !confirm(
-        `${remaining}명에게 PC 카카오톡으로 실제 메시지를 보냅니다.\n` +
+        `${remaining}명에게 PC 카카오톡으로 실제 메시지를 보냅니다${job.fileCount > 0 ? ` (이미지 ${job.fileCount}장 포함)` : ""}.\n` +
           "보내는 동안 이 화면을 열어 두고, PC 카카오톡은 건드리지 마세요.",
       )
     )
@@ -173,8 +196,6 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
     if (!job) return;
     offered.current = true;
     router.replace("/jobs", { scroll: false });
-    // The PC program cannot send images yet; the list already says so, so do not offer a send that will fail.
-    if (job.fileCount > 0) return;
     // After the page has painted, so the list is visible behind the confirm dialog.
     setTimeout(() => start(job), 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,8 +261,8 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
                     </ul>
                   </details>
                 )}
-                {job.status === "queued" && job.fileCount > 0 && (
-                  <p className="mt-1 text-xs text-muted">이미지가 있는 요청은 아직 PC 프로그램으로 보낼 수 없습니다.</p>
+                {job.status === "queued" && job.fileCount > 0 && imagesSupported === false && (
+                  <p className="mt-1 text-xs text-muted">이 PC 프로그램은 아직 이미지를 보낼 수 없습니다(지금은 맥 PC 프로그램만 지원).</p>
                 )}
               </div>
               {job.status === "queued" && (
@@ -249,7 +270,7 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={starting || pending || active !== null || job.fileCount > 0}
+                    disabled={starting || pending || active !== null || (job.fileCount > 0 && imagesSupported === false)}
                     onClick={() => start(job)}
                   >
                     PC 프로그램으로 발송

@@ -143,8 +143,40 @@ async function requestDaemonShutdown() {
   }
 }
 
+// Longest a PC program can need to finish its last recipient (5 images with slow uploads, then closing the chat).
+const LAST_RECIPIENT_MS = 10 * 60 * 1000;
+
 async function startDaemon() {
-  const found = await probeDaemon();
+  let found = await probeDaemon();
+  // A PC program from the previous run may still be finishing its last recipient. Wait for it to exit and
+  // start a fresh one: adopting it would leave this app with no PC program once it exits a moment later.
+  // The window is already open meanwhile (the sidebar shows the old one as "종료 중").
+  const waitUntil = Date.now() + LAST_RECIPIENT_MS;
+  let waited = false;
+  while (found === "daemon" && !quitting) {
+    const shuttingDown = await daemonJson("/status").then((s) => s.shutting_down === true || s.status === "ShuttingDown").catch(() => null);
+    if (shuttingDown === null) {
+      // No answer: it may have just exited. Look at the port again instead of assuming it is still there.
+      if (Date.now() > waitUntil) {
+        log("the PC program on the port does not answer; not starting another one (restart the app later)");
+        return;
+      }
+      await sleep(300);
+      found = await probeDaemon();
+      continue;
+    }
+    if (!shuttingDown) break;
+    if (!waited) log("the previous PC program is still finishing its last recipient; waiting for it to exit");
+    waited = true;
+    if (Date.now() > waitUntil) {
+      log("the previous PC program did not exit in time; not starting another one (restart the app later)");
+      return;
+    }
+    await sleep(1000);
+    found = await probeDaemon();
+  }
+  if (waited && found !== "daemon") log("the previous PC program has exited");
+  if (quitting) return; // the app is closing; do not start a PC program it would not stop
   if (found === "daemon") {
     // Started by hand (dotnet run, mock-daemon): leave it alone. Its default allowed origins include APP_ORIGIN.
     log("using the PC program that is already running on", DAEMON_URL);
@@ -193,7 +225,7 @@ async function startDaemon() {
     if (!systemPreferences.isTrustedAccessibilityClient(true)) {
       log("Accessibility permission not granted yet; the dashboard shows it until it is allowed");
     }
-    forkNodeDaemon(macServer, "Mac PC program", "mac", {
+    spawnMacDaemon(macServer, {
       ...env,
       KAKAO_MAC_BIN: macBinary,
       NINETALK_MAC_STATE_DIR: path.join(app.getPath("userData"), "daemon-mac"),
@@ -208,14 +240,42 @@ async function startDaemon() {
   }
 }
 
-/** Runs a Node daemon (Mac PC program or mock) in a utility process; it is stopped with POST /shutdown. */
+/**
+ * Runs the Mac PC program as a direct child of this app: the app's own executable in Node mode
+ * (ELECTRON_RUN_AS_NODE). Not a utility process, because Electron's helper processes are their own
+ * "responsible" process for macOS privacy checks, so the Accessibility permission the user grants to
+ * this app would not cover kakao-mac (it reported NoAccessibility with the app allowed).
+ */
+// Note: this needs Electron's RunAsNode fuse (on by default); do not turn that fuse off in the build.
+function spawnMacDaemon(script, env) {
+  const child = spawn(process.execPath, [script], {
+    // NINETALK_PARENT_PID: the daemon exits by itself when this app is gone (crash, force quit).
+    env: { ...env, ELECTRON_RUN_AS_NODE: "1", NINETALK_PARENT_PID: String(process.pid) },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  watchDaemonChild(child, "Mac PC program", "mac");
+}
+
+/** Runs the mock daemon in a utility process (development only). */
 function forkNodeDaemon(script, name, prefix, env) {
   const child = utilityProcess.fork(script, [], { env, stdio: "pipe", serviceName: `NineTalk ${name}` });
+  watchDaemonChild(child, name, prefix);
+}
+
+/** Pipes a Node daemon's output and stops it with POST /shutdown (kill after 3 s) when the app quits. */
+function watchDaemonChild(child, name, prefix) {
   child.stdout?.on("data", (d) => process.stdout.write(`[${prefix}] ${d}`));
   child.stderr?.on("data", (d) => process.stderr.write(`[${prefix}] ${d}`));
   let exited = false;
   const onExit = (cb) => (exited ? cb() : child.once("exit", cb));
-  child.once("exit", () => (exited = true));
+  child.once("exit", (code) => {
+    exited = true;
+    log(`${name} exited`, code ?? "");
+  });
+  child.on?.("error", (e) => {
+    exited = true;
+    log(`${name} failed:`, e?.message ?? e?.type ?? e);
+  });
   children.push({
     name,
     stop: async () => {
@@ -320,7 +380,8 @@ function confirmQuitWhileSending() {
     // already showing: its polling may have given up ("연결이 끊어졌습니다"), and a fresh load picks the run up again.
     mainWindow?.loadURL(`${APP_ORIGIN}/jobs`).catch(() => {});
     await daemonJson("/send/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
-    const deadline = Date.now() + 120000;
+    // Up to the PC program's own worst case for one recipient, so the last result is not lost to a cut-off.
+    const deadline = Date.now() + LAST_RECIPIENT_MS;
     while (Date.now() < deadline) {
       try {
         if ((await daemonJson("/send/result")).state !== "running") break;
@@ -399,7 +460,9 @@ async function main() {
   }
 
   startWebServer();
-  await startDaemon();
+  // Not awaited: it can wait minutes for a previous PC program to finish, and the window must not stay
+  // hidden that long. The dashboard shows the PC program's state as it comes up.
+  startDaemon().catch((error) => log("starting the PC program failed:", error?.message ?? error));
 
   if (!(await waitForServer(`${APP_ORIGIN}/dashboard`, 30000))) {
     dialog.showErrorBox("한평생톡", "내부 서버가 30초 안에 시작되지 않았습니다.");

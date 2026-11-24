@@ -12,7 +12,7 @@ namespace NineTalkDaemon;
 sealed class HttpServer : IDisposable
 {
     public const int Port = 47301;
-    public const string Version = "0.1.0";
+    public const string Version = "0.1.1";
 
     static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -85,11 +85,12 @@ sealed class HttpServer : IDisposable
                 case ("GET", "/status"):
                     if (sender.IsRunning)
                     {
-                        await Send(res, origin, 200, new { status = "SendMessage", version = Version, current_sent_order = sender.Processed, last_error = (string?)null });
+                        await Send(res, origin, 200, new { status = "SendMessage", version = Version, images = true, current_sent_order = sender.Processed, last_error = (string?)null });
                         break;
                     }
                     var (status, count, error) = sync.Status();
-                    await Send(res, origin, 200, new { status, version = Version, current_sync_cnt = count, last_error = error });
+                    // images: this PC program can send images (POST /send "images").
+                    await Send(res, origin, 200, new { status, version = Version, images = true, current_sync_cnt = count, last_error = error });
                     break;
 
                 case ("POST", "/send"):
@@ -195,16 +196,45 @@ sealed class HttpServer : IDisposable
             await Send(res, origin, 400, new { ok = false, error = "recipients required" });
             return;
         }
-        // Image sending is not implemented yet. Refusing the job is safer than sending only the text.
-        if (body.Images is { Count: > 0 })
+        // Refused up front, so broken data fails once instead of once per recipient.
+        var (images, imageError) = DecodeImages(body.Images);
+        if (imageError is not null)
         {
-            await Send(res, origin, 400, new { ok = false, error = "images_not_supported" });
+            await Send(res, origin, 400, new { ok = false, error = imageError });
+            return;
+        }
+        if (images.Count == 0 && recipients.Any(r => string.IsNullOrWhiteSpace(r.Text)))
+        {
+            await Send(res, origin, 400, new { ok = false, error = "text or images required" });
             return;
         }
         var refused = sender.TryStart(body.JobId, recipients.Select(r => new SendService.Recipient(r.Id, r.Name!.Trim(), r.Text)).ToList(),
-            SendService.Settings.From(body.IntervalMs, body.SpeedRate, body.SplitSendCount, body.SendMode));
+            SendService.Settings.From(body.IntervalMs, body.SpeedRate, body.SplitSendCount, body.SendMode),
+            attachments: new SendService.Attachments(images, body.ImageFirst));
         if (refused is null) await Send(res, origin, 202, new { ok = true });
         else await Send(res, origin, 409, new { ok = false, status = refused });
+    }
+
+    const int MaxImages = 5, MaxImageBytes = 10 * 1024 * 1024;
+    static readonly HashSet<string> ImageMimes = new(StringComparer.OrdinalIgnoreCase) { "image/png", "image/jpeg", "image/jpg", "image/gif", "image/bmp" };
+
+    /// <summary>Base64 images from POST /send, checked to be small images this PC can decode (no WebP/HEIC).</summary>
+    static (List<byte[]> images, string? error) DecodeImages(List<SendImage>? images)
+    {
+        var list = new List<byte[]>();
+        if (images is not { Count: > 0 }) return (list, null);
+        if (images.Count > MaxImages) return (list, $"at most {MaxImages} images");
+        foreach (var image in images)
+        {
+            if (!ImageMimes.Contains(image.Mime ?? "")) return (list, "unsupported image type");
+            byte[] data;
+            try { data = Convert.FromBase64String(image.DataBase64 ?? ""); }
+            catch (FormatException) { return (list, "not a valid image"); }
+            if (data.Length == 0 || data.Length > MaxImageBytes) return (list, "image too large or empty");
+            if (!ClipboardImage.CanDecode(data)) return (list, "not a valid image");
+            list.Add(data);
+        }
+        return (list, null);
     }
 
     sealed record SendRecipient(long Id, string? Name, string? Text);

@@ -38,6 +38,7 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showRegistered, setShowRegistered] = useState(false);
   const [uncertainOnly, setUncertainOnly] = useState(false);
+  const [filter, setFilter] = useState("");
   const [senderType, setSenderType] = useState<SenderType>("Honorific");
   const [groupId, setGroupId] = useState("");
 
@@ -79,6 +80,7 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
       // Preselect only names that are new, unambiguous and read with confidence.
       setSelected(new Set(list.filter((item) => !item.registered && item.kakaoCount === 1 && !item.uncertain).map((item) => item.key)));
       setUncertainOnly(false);
+      setFilter("");
       setPhase("review");
     } catch {
       setNotice({ tone: "error", text: "불러온 친구 목록을 받지 못했습니다. PC 프로그램을 확인해 주세요." });
@@ -162,7 +164,14 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
   }, [candidates]);
   const sameNameCount = (item: Candidate) => nameCounts.get(item.name.trim()) ?? 0;
 
-  const visible = candidates.filter((item) => (showRegistered || !item.registered) && (!uncertainOnly || item.uncertain));
+  // Search within what was read: the name as read and as corrected, ignoring spaces and case
+  // (KakaoTalk names can also arrive as decomposed Hangul, so both sides are composed first).
+  const query = searchKey(filter);
+  const matchesFilter = (item: Candidate) => !query || searchKey(item.name).includes(query) || searchKey(item.key).includes(query);
+  const visible = candidates.filter(
+    (item) => (showRegistered || !item.registered) && (!uncertainOnly || item.uncertain) && matchesFilter(item),
+  );
+  const selectedHidden = [...selected].filter((key) => !visible.some((item) => item.key === key)).length;
   const newCount = candidates.filter((item) => !item.registered).length;
   const duplicateCount = candidates.filter((item) => sameNameCount(item) > 1).length;
   const uncertainCount = candidates.filter((item) => item.uncertain && !item.registered).length;
@@ -300,12 +309,39 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
             </p>
           )}
 
+          <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3 text-sm">
+            <input
+              type="search"
+              className="input max-w-xs"
+              placeholder="불러온 목록에서 이름 검색"
+              aria-label="불러온 목록에서 이름 검색"
+              value={filter}
+              maxLength={50}
+              onChange={(event) => setFilter(event.target.value)}
+            />
+            {query && (
+              <span className="text-muted">
+                검색 결과 {visible.length}명
+                {selectedHidden > 0 && ` · 검색에 안 보이는 선택 ${selectedHidden}명도 함께 등록됩니다`}
+              </span>
+            )}
+          </div>
+
           {visible.length === 0 ? (
             <p className="p-10 text-center text-sm text-muted">
-              새로 등록할 친구가 없습니다.{" "}
-              <Link href="/friends" className="text-accent underline">
-                친구 관리로 가기
-              </Link>
+              {query ? (
+                <>
+                  &lsquo;{filter.trim()}&rsquo;(이)가 들어간 이름이 없습니다.
+                  {!showRegistered && " 이미 등록한 친구는 '이미 등록한 친구도 보기'를 켜면 보입니다."}
+                </>
+              ) : (
+                <>
+                  새로 등록할 친구가 없습니다.{" "}
+                  <Link href="/friends" className="text-accent underline">
+                    친구 관리로 가기
+                  </Link>
+                </>
+              )}
             </p>
           ) : (
             <ul className="max-h-[32rem] divide-y divide-border/60 overflow-y-auto">
@@ -361,8 +397,15 @@ export function KakaoImport({ existingNames, groups }: { existingNames: string[]
   );
 }
 
+/** For the name search: composed Hangul, no spaces, lower case. */
+function searchKey(text: string) {
+  return text.normalize("NFC").replace(/\s+/g, "").toLowerCase();
+}
+
 function ReadSummaryBar({ summary }: { summary: ReadSummary }) {
   const { total, read, unreadable, keyword } = summary;
+  // Fewer rows than KakaoTalk's own count (and not explained by unreadable rows): some friends were skipped.
+  const missing = !keyword && total !== null ? total - read - unreadable : 0;
   const head = keyword
     ? `'${keyword}'(이)가 들어간 이름 ${read}명을 찾았습니다`
     : total !== null
@@ -374,6 +417,12 @@ function ReadSummaryBar({ summary }: { summary: ReadSummary }) {
         {head}
         {unreadable > 0 && <span className="text-danger">, {unreadable}명은 이름을 읽지 못했습니다</span>}.
       </p>
+      {missing > 0 && (
+        <p className="mt-0.5 text-xs text-danger">
+          카카오톡에 표시된 수보다 {missing}명 적게 읽었습니다. 읽는 도중 카카오톡 창이 움직였거나 가려졌을 수 있으니, 카카오톡을 건드리지 말고 다시
+          불러와 보세요.
+        </p>
+      )}
       {unreadable > 0 && (
         <p className="mt-0.5 text-xs text-muted">
           {keyword ? "이름을 읽지 못한 친구는 검색 결과에서 빠졌을 수 있습니다. " : "읽지 못한 친구는 목록에 없습니다. "}

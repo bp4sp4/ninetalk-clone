@@ -23,6 +23,8 @@ export type DaemonStatus = {
   current_sync_cnt?: number;
   /** While sending: recipients handled so far. */
   current_sent_order?: number;
+  /** True when this PC program can send images (Mac and Windows PC programs from 0.1.1). */
+  images?: boolean;
   /** Why the last sync failed; the daemon returns to Ready either way. */
   last_error?: string | null;
 };
@@ -54,6 +56,16 @@ export const DAEMON_STATE_LABELS: Record<string, string> = {
   ShuttingDown: "PC 프로그램 종료 중",
 };
 
+/** POST /send refusals (DAEMON_API.md), worded for the user. */
+const BAD_REQUEST_LABELS: Record<string, string> = {
+  images_not_supported: "이 PC 프로그램은 이미지를 보낼 수 없습니다. 앱을 새 버전으로 업데이트해 주세요.",
+  "unsupported image type": "PC 프로그램이 보낼 수 없는 이미지 형식입니다. PNG·JPG·GIF 로 바꿔 주세요.",
+  "not a valid image": "이미지 파일이 손상되었거나 열 수 없습니다.",
+  "image too large or empty": "이미지가 너무 크거나 비어 있습니다 (장당 10MB까지).",
+  "at most 5 images": "이미지는 5장까지 보낼 수 있습니다.",
+  "text or images required": "보낼 문구나 이미지가 없습니다.",
+};
+
 /** A refusal or error answered by the PC program itself; its message is written for the user. */
 export class DaemonError extends Error {}
 
@@ -69,6 +81,12 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs = 4000): Prom
     const body = (await res.json().catch(() => null)) as { status?: string } | null;
     const state = body?.status;
     if (state) throw new DaemonError(`PC 프로그램이 지금 받을 수 없습니다: ${DAEMON_STATE_LABELS[state] ?? state}`);
+  }
+  if (res.status === 400) {
+    // A refused request (mostly images the PC program cannot send): say why instead of a bare 400.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    const label = body?.error ? BAD_REQUEST_LABELS[body.error] : undefined;
+    if (label) throw new DaemonError(label);
   }
   if (!res.ok) throw new DaemonError(`PC 프로그램 응답 오류 (${res.status})`);
   return (await res.json()) as T;
@@ -99,6 +117,8 @@ export const SEND_ERROR_LABELS: Record<string, string> = {
   send_failed: "전송 실패",
   kakao_not_ready: "카카오톡 준비 안 됨",
   input_not_empty: "채팅방 입력창에 쓰던 글이 있어 보내지 않음",
+  partial_sent: "일부만 보냄 (문구나 이미지 중 일부) — 채팅방에서 확인하세요",
+  unknown_result: "보냈는지 알 수 없음 (PC 프로그램이 중간에 멈춤) — 채팅방에서 확인하세요",
   dry_run: "시험 실행(dry-run)이라 실제로 보내지 않음",
 };
 

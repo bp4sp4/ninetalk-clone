@@ -37,8 +37,8 @@ function finishSync(extra = {}) {
   state = { ...state, status: "Ready", timer: null, ...extra };
 }
 
-// Sending (DAEMON_API.md "발송"): one recipient per tick. Like the real daemon, a job with images is
-// refused (images are not supported yet). Every 7th recipient fails as not_found, to exercise failures.
+// Sending (DAEMON_API.md "발송"): one recipient per tick. A job with images is refused like an old PC
+// program without image support (the Mac and Windows PC programs now send images). Every 7th recipient fails as not_found, to exercise failures.
 let sendJob = { job_id: null, state: "done", results: [], timer: null, stopRequested: false };
 
 function startSendJob({ job_id, recipients, interval_ms, split_send_count, send_mode }) {

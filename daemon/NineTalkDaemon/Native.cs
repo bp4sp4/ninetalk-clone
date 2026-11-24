@@ -125,4 +125,12 @@ static class Native
     }
 
     public static IntPtr MakeLParam(int lo, int hi) => (IntPtr)((hi << 16) | (lo & 0xFFFF));
+
+    // ---- image sending (KakaoSender.SendImageAsync) ----
+
+    public const uint WM_PASTE = 0x0302;
+    public const uint GW_OWNER = 4;
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+    [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+
 }

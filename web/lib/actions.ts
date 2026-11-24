@@ -329,6 +329,8 @@ const SEND_ERRORS = new Set([
   "send_failed",
   "kakao_not_ready",
   "input_not_empty",
+  "partial_sent",
+  "unknown_result",
   "dry_run",
 ]);
 
