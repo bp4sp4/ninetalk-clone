@@ -148,4 +148,70 @@ static class Native
     [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public POINT pt; public uint lPrivate; }
+    [DllImport("user32.dll")] static extern bool PeekMessage(out MSG msg, IntPtr hwnd, uint min, uint max, uint remove);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint attachTo, bool on);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] state);
+    [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] state);
+    [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint mapType);
+    const int VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+    const int VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1, VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3, VK_LMENU = 0xA4, VK_RMENU = 0xA5;
+
+    /// <summary>
+    /// Ctrl + a key, posted to one window only: no global keyboard input, so nothing can land in the program
+    /// the user is typing in. Posted keys do not change the keyboard state a program reads with GetKeyState,
+    /// so Ctrl is set as held in the target thread's state for the moment (by sharing its input state),
+    /// then the state is put back. Other modifiers are cleared meanwhile, so a Shift or Alt the user happens
+    /// to hold cannot turn this into another shortcut. Runs on its own thread (it needs an input queue).
+    /// </summary>
+    /// <returns>true when sent, false when it could not be, null when it did not finish in time (may still arrive).</returns>
+    public static bool? PostCtrlKey(IntPtr hwnd, byte vk)
+    {
+        bool done = false;
+        int[] modifiers = { VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN, VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU };
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                PeekMessage(out _, IntPtr.Zero, 0, 0, 0); // gives this thread an input queue
+                uint target = GetWindowThreadProcessId(hwnd, out _);
+                uint ours = GetCurrentThreadId();
+                if (target == 0 || !AttachThreadInput(ours, target, true)) return;
+                try
+                {
+                    var old = new byte[256];
+                    if (!GetKeyboardState(old)) return;
+                    var held = (byte[])old.Clone();
+                    foreach (var k in modifiers) held[k] = 0;
+                    held[VK_CONTROL] = 0x80;
+                    held[VK_LCONTROL] = 0x80;
+                    SetKeyboardState(held);
+                    nint scan = (nint)MapVirtualKey(vk, 0) << 16;
+                    PostMessage(hwnd, WM_KEYDOWN, vk, 1 | scan);
+                    Thread.Sleep(100); // held until KakaoTalk has read the key
+                    PostMessage(hwnd, WM_KEYUP, vk, 1 | scan | unchecked((nint)0xC0000000));
+                    Thread.Sleep(30);
+                    // Only the modifiers go back to what they were; any other key the user pressed or released
+                    // meanwhile keeps its current state instead of being overwritten with an old snapshot.
+                    var now = new byte[256];
+                    if (GetKeyboardState(now))
+                    {
+                        foreach (var k in modifiers) now[k] = old[k];
+                        SetKeyboardState(now);
+                    }
+                    else SetKeyboardState(old);
+                    done = true;
+                }
+                finally { AttachThreadInput(ours, target, false); }
+            }
+            catch { /* reported as not sent; an exception here must not take the program down */ }
+        });
+        thread.IsBackground = true;
+        thread.Start();
+        if (!thread.Join(3000)) return null;
+        return done;
+    }
+
 }

@@ -222,11 +222,11 @@ static class KakaoSender
     /// went out (dry-run: when the window appeared and was cancelled), otherwise what went wrong; `unsure`
     /// means a KakaoTalk window we could not close is left over, so it is unknown whether something went out.
     ///
-    /// 1. The image goes on the clipboard and WM_PASTE is posted to the chat input. No global key input:
-    ///    a real Ctrl+V could land in whatever program the user is typing in.
-    /// 2. Only a new window owned by this chat counts as its image-send window, so a message notification
-    ///    popping up meanwhile is never clicked. Its yellow "전송" button is found on a capture and clicked;
-    ///    the window closing means it was sent.
+    /// 1. The image goes on the clipboard and Ctrl+V is posted to the chat input only (Native.PostCtrlKey).
+    ///    No global key input: a real Ctrl+V could land in whatever program the user is typing in.
+    /// 2. The image-send window is a new window owned by this chat, or the only new one sitting over the chat
+    ///    with a preview's size, so a message notification popping up meanwhile is not clicked. Its yellow
+    ///    "전송" button is found on a capture and clicked; the window closing means it was sent.
     /// 3. The upload is given time before moving on (closing the chat during an upload drops the image);
     ///    KakaoTalk shows no progress that can be read, so the wait grows with the image size.
     /// </summary>
@@ -238,15 +238,23 @@ static class KakaoSender
 
         var before = KakaoWindows(kakao).ToHashSet();
         List<IntPtr> Fresh() => KakaoWindows(kakao).Where(h => !before.Contains(h) && h != chat).ToList();
+        var chatRect = Native.WindowRect(chat);
+        // The image window: a new window owned by this chat, or else the only new window, sitting over the
+        // chat and big enough for a preview (a message notification pops up small, at the screen corner).
         IntPtr? FindSheet()
         {
-            var owned = Fresh().Where(h => Native.GetWindow(h, Native.GW_OWNER) == chat).ToList();
-            return owned.Count == 1 ? owned[0] : null;
+            var fresh = Fresh();
+            var owned = fresh.Where(h => Native.GetWindow(h, Native.GW_OWNER) == chat).ToList();
+            if (owned.Count == 1) return owned[0];
+            if (owned.Count > 1 || fresh.Count != 1) return null;
+            var r = Native.WindowRect(fresh[0]);
+            var center = new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+            return chatRect.Contains(center) && r.Width >= 200 && r.Height >= 150 ? fresh[0] : null;
         }
 
-        int lengthBefore = Native.TextLength(input);
-        // Posted, not sent: if the paste opens a modal window, SendMessage would wait until someone closed it.
-        Native.PostMessage(input, Native.WM_PASTE, IntPtr.Zero, IntPtr.Zero);
+        // Ctrl+V to the chat input only (WM_PASTE alone opened nothing on KakaoTalk 26.8, 2026-11-24).
+        // false: nothing was sent. null (did not finish in time): it may still arrive, so watch for the window as usual.
+        if (Native.PostCtrlKey(input, 0x56 /* V */) == false) return ("붙여넣기 키를 보내지 못함", false);
         var sheet = await WaitForAsync<IntPtr>(8000, FindSheet); // a large image takes a while to preview
         if (sheet is not IntPtr window)
         {
@@ -261,9 +269,18 @@ static class KakaoSender
             }
             bool leftOpen = leftovers.Count > 0
                 && await WaitForAsync(3000, () => leftovers.Any(h => Native.IsWindow(h) && Native.IsWindowVisible(h)) ? null : (bool?)true) is null;
-            // WM_PASTE may have put the image into the input box itself. Cleared only when the box was empty
-            // before, so a draft we could not see is never wiped.
-            if (lengthBefore == 0 && Native.TextLength(input) > 0) Native.ClearText(input);
+            // The key may have arrived as a plain "v" ("ㅍ" in Korean input), or the image went into the box as one
+            // embedded object. Cleared only when the box now holds exactly one character and the button lit up:
+            // anything longer could be a draft drawn late or something the user typed, and is left alone.
+            if (SendButtonLit(chat) == true)
+            {
+                if (Native.GetText(input).Length == 1)
+                {
+                    log("  붙여넣기가 입력창에 한 글자로 들어가 지움");
+                    Native.ClearText(input);
+                }
+                else log("  붙여넣은 뒤 입력창에 글이 있어 그대로 둠");
+            }
             return leftOpen ? ("붙여넣은 뒤 뜬 창이 닫히지 않음", true) : ("이미지 전송 창이 뜨지 않음", false);
         }
         var rect = Native.WindowRect(window);
