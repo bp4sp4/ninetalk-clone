@@ -86,6 +86,7 @@ static class Native
     public static int TextLength(IntPtr hwnd) => (int)SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
 
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
 
     public const uint WM_CHAR = 0x0102;
@@ -141,7 +142,7 @@ static class Native
 
     public static IntPtr MakeLParam(int lo, int hi) => (IntPtr)((hi << 16) | (lo & 0xFFFF));
 
-    // ---- image sending (KakaoSender.SendImageAsync) ----
+    // ---- image and file sending (KakaoSender.SendPastedAsync) ----
 
     public const uint WM_PASTE = 0x0302;
     public const uint GW_OWNER = 4;

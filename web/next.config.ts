@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   partialPrefetching: true,
   experimental: {
     serverActions: {
-      // Message attachments: up to 5 images x 5MB, plus multipart overhead.
+      // Message attachments: photos and files, 25MB together (web/lib/attachments.ts), plus multipart overhead.
       bodySizeLimit: "30mb",
     },
     // Keep the route cache in memory. The desktop app runs the server from inside its signed app bundle;

@@ -19,13 +19,19 @@ sealed class SendService
         public int Count => Images.Count + Files.Count;
     }
 
-    /// <summary>Removes the folders of earlier jobs' files.</summary>
+    /// <summary>
+    /// Removes the folders of earlier jobs' files that are over 30 minutes old: younger ones may still be
+    /// uploading, or belong to another run (the tray program and a --send-test at the same time).
+    /// </summary>
     static void RemoveFileFolders()
     {
         try
         {
             foreach (var dir in Directory.GetDirectories(FilesRoot, "files-*"))
+            {
+                if (DateTime.Now - Directory.GetCreationTime(dir) < TimeSpan.FromMinutes(30)) continue;
                 try { Directory.Delete(dir, recursive: true); } catch { /* in use: next time */ }
+            }
         }
         catch { /* no folder yet */ }
     }
@@ -174,6 +180,9 @@ sealed class SendService
                     }
                     catch (Exception ex) { Write($"  #{r.Id}: {ex.Message}"); error = "send_failed"; }
                 }
+                // "_stop": a file step that would fail the same way for everyone; recorded without the marker.
+                bool stopJob = error?.EndsWith(KakaoSender.StopSuffix) == true;
+                if (stopJob) error = error![..^KakaoSender.StopSuffix.Length];
                 Write($"{i + 1}/{recipients.Count} #{r.Id}: {error ?? (dryRun ? "dry-run ok" : "sent")}");
                 lock (gate)
                 {
@@ -181,6 +190,20 @@ sealed class SendService
                     processed = results.Count;
                 }
                 if (error == "kakao_not_ready") { finalState = "failed"; break; }
+                if (stopJob)
+                {
+                    Write("파일을 보내지 못해 멈춥니다 (다른 사람도 같을 것이라, 남은 사람은 대기로 돌아감)");
+                    finalState = "failed";
+                    break;
+                }
+                // Unknown whether it went out (a file sent with no window, a window left open): that would happen
+                // to everyone the same way, so stop here; the rest go back to waiting instead of all ending unknown.
+                if (error == "unknown_result")
+                {
+                    Write("보냈는지 알 수 없는 결과가 나와 멈춥니다 (남은 사람은 대기로 돌아감)");
+                    finalState = "failed";
+                    break;
+                }
 
                 if (i == recipients.Count - 1) break;
                 try { await Task.Delay(settings.IntervalMs, ct); }

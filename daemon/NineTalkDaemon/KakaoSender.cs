@@ -177,6 +177,13 @@ static class KakaoSender
                         var label = $"{item.What} {pastes.Take(n + 1).Count(p => p.What == item.What)}";
                         steps.Add(async () =>
                         {
+                            if (dryRun && item.FileName is not null)
+                            {
+                                // KakaoTalk may send a pasted file at once, without a window to cancel: a dry-run
+                                // must never paste one.
+                                log($"  [dry-run] {label}: 파일은 바로 보내질 수 있어 붙여넣지 않음");
+                                return null;
+                            }
                             var (problem, unsure) = await SendPastedAsync(kakao, chat, input, item, clipboard!, dryRun, log);
                             if (problem is not null && unsure)
                             {
@@ -185,7 +192,9 @@ static class KakaoSender
                                 log($"  {label}: {problem} (보냈는지 알 수 없음)");
                                 return "unknown_result";
                             }
-                            if (problem is not null) return Failed($"{label}: {problem}");
+                            // A file step fails the same way for everyone (the window is the same each time):
+                            // "_stop" tells the job to stop instead of sending everyone the text without the file.
+                            if (problem is not null) return Failed($"{label}: {problem}") + (item.FileName is not null ? StopSuffix : "");
                             if (!dryRun) sentSteps++;
                             return null;
                         });
@@ -219,6 +228,9 @@ static class KakaoSender
             FriendListReader.Click(kakao.ContactView, S(SearchCloseX), S(SearchCloseY));
         }
     }
+
+    /// <summary>Added to an error code when the whole job should stop (SendService strips it).</summary>
+    public const string StopSuffix = "_stop";
 
     /// <summary>One thing to paste into the chat: an image or a file.</summary>
     sealed record Pasted(string What, Func<ClipboardImage, bool> Put, long Size, int MaxUploadWaitMs, string? FileName);
@@ -322,6 +334,10 @@ static class KakaoSender
         if (button is not Point click)
             return ($"{what} 창의 전송 버튼을 찾지 못함", !await CancelSheetAsync(window));
         log($"  {what} 전송 버튼 {click.X},{click.Y}");
+        // The file window has not been seen yet, and a "취소" or "확인" button would look the same to the finder:
+        // read the label first and press only "전송".
+        if (item.FileName is not null && !await LabelSaysSend(window, click, log))
+            return ("파일 창의 버튼 글자가 \"전송\"이 아님", !await CancelSheetAsync(window));
         FriendListReader.Click(window, click.X, click.Y);
         if (await WaitForAsync(8000, () => Native.IsWindow(window) && Native.IsWindowVisible(window) ? null : (bool?)true) is null)
         {
@@ -334,6 +350,41 @@ static class KakaoSender
         log($"  {what} 보냄, 업로드 {wait / 1000.0:F1}초 기다림");
         await Task.Delay(wait, ct);
         return (null, false);
+    }
+
+    /// <summary>Reads the label around a point (client coordinates) of a window with Windows OCR: is it "전송"?</summary>
+    static async Task<bool> LabelSaysSend(IntPtr window, Point clientPoint, Action<string> log)
+    {
+        try
+        {
+            using var img = Capture.Window(window);
+            if (img is null) return false;
+            var s = Native.GetDpiForWindow(window) / 96.0;
+            var rect = Native.WindowRect(window);
+            var pt = new Native.POINT { X = clientPoint.X, Y = clientPoint.Y };
+            Native.ClientToScreen(window, ref pt);
+            int x = pt.X - rect.Left, y = pt.Y - rect.Top; // capture coordinates
+            var region = new Rectangle(x - (int)(60 * s), y - (int)(18 * s), (int)(120 * s), (int)(36 * s));
+            var lines = await Ocr.RecognizeStripAsync(img, region, 3f);
+            log($"  버튼 주변 글자: {string.Join(" | ", lines.Select(l => $"'{l.Text}'"))}");
+            // Only the line under (or nearest to) the click point counts, so "전송" beside a "취소" being clicked
+            // does not pass; and a line that also says 취소/확인/닫기 is never taken.
+            var under = lines.OrderBy(l =>
+            {
+                int dx = Math.Max(0, Math.Max(l.Bounds.Left - x, x - l.Bounds.Right));
+                int dy = Math.Max(0, Math.Max(l.Bounds.Top - y, y - l.Bounds.Bottom));
+                return dx * dx + dy * dy;
+            }).FirstOrDefault();
+            if (under is null) return false;
+            var text = under.Text.Replace(" ", "");
+            if (text.Contains("취소") || text.Contains("확인") || text.Contains("닫기")) return false;
+            return text.Contains("전송") || text.Contains("보내기");
+        }
+        catch (Exception ex)
+        {
+            log("  버튼 글자를 읽지 못함: " + ex.Message);
+            return false;
+        }
     }
 
     /// <summary>Closes the image-send window without sending (its own close = 취소). False if it stays open.</summary>

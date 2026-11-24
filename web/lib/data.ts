@@ -1,3 +1,4 @@
+import { IMAGE_TYPES } from "./attachments";
 import "server-only";
 import { db } from "./db";
 import { requireUser } from "./auth";
@@ -95,7 +96,7 @@ export async function getJobs(limit = 50): Promise<JobSummary[]> {
               (SELECT count(*) FROM send_job_recipients r WHERE r.job_id = j.id AND r.status = 'failed') AS failed,
               (SELECT count(*) FROM send_job_files f WHERE f.job_id = j.id) AS file_count,
               (SELECT count(*) FROM send_job_files f WHERE f.job_id = j.id
-                 AND f.mime NOT IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')) AS document_count
+                 AND f.mime NOT IN (${[...IMAGE_TYPES].map((type) => `'${type}'`).join(", ")})) AS document_count
        FROM send_jobs j WHERE j.user_id = ? ORDER BY j.id DESC LIMIT ?`,
     )
     .all(user.id, limit) as {
