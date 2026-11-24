@@ -53,7 +53,7 @@ static class FriendListReader
     sealed class ReadSession(double scale, Action<FriendName> onName, Action<string> log) : IDisposable
     {
         Page? prev;
-        int pageNo, offset, nextRow, total, unreadable, uncertain;
+        int pageNo, offset, nextRow, total, unreadable, uncertain, stuck;
         int? firstRow; // list y of the first friend row's avatar top
         int? expected; // count shown in the "친구 N" header
 
@@ -67,7 +67,19 @@ static class FriendListReader
             if (prev is not null)
             {
                 shift = FindShift(prev, page);
-                if (shift == 0) { page.Image.Dispose(); return false; } // the list did not move: bottom reached
+                if (shift == 0)
+                {
+                    page.Image.Dispose();
+                    // Fewer rows than KakaoTalk's count: the wheel may just have been missed while it was busy,
+                    // so scroll a few more times before calling it the bottom.
+                    if (expected is int e && nextRow < e && ++stuck <= 3)
+                    {
+                        log($"  목록이 안 움직임 ({nextRow}/{e}행), 다시 내려 봄");
+                        return true;
+                    }
+                    return false; // the list did not move: bottom reached
+                }
+                stuck = 0;
                 if (shift is null) { page.Image.Dispose(); throw new ShiftLostException(); }
                 offset += shift.Value;
             }
@@ -81,14 +93,17 @@ static class FriendListReader
                 var first = header is null ? null : page.Avatars.FirstOrDefault(a => a.Top > header.Top);
                 if (first is null || first.Bottom > page.Height - 2) return true; // not on screen yet
                 firstRow = offset + first.Top;
-                var digits = Regex.Match(header!.Text, @"\d+");
-                if (digits.Success) expected = int.Parse(digits.Value);
+                // "친구 1,234": a thousands separator must not cut the count to 1.
+                var digits = Regex.Match(header!.Text, @"\d[\d,.]*");
+                if (digits.Success && int.TryParse(digits.Value.Replace(",", "").Replace(".", ""), out var n)) expected = n;
             }
 
             // Rows that are whole on this page and not read yet.
+            // The "친구 N" count is OCR too and can be misread (433 → 43), so it never ends the read by
+            // itself: before N an empty row is a row we failed to read, from N on it is the end of the list.
             var rows = new List<(int index, Band band)>();
             bool ended = false;
-            while (expected is null || nextRow < expected)
+            while (true)
             {
                 int top = firstRow.Value + nextRow * S(RowPitch) - offset;
                 // Snap to the detected avatar, so rounding never accumulates over hundreds of rows.
@@ -99,15 +114,20 @@ static class FriendListReader
                     top = snapped.Top;
                 }
                 if (top + S(AvatarSize) > page.Height - 2) break; // not whole yet: next page
+                bool pastCount = expected is int count && nextRow >= count;
+                // A section header in this slot after the count: the friends section is over.
+                if (pastCount && page.Headers.Any(h => h.Top >= top - S(8) && h.Top < top + S(AvatarSize))) { ended = true; break; }
                 // A very light profile picture can miss the avatar check; a name in the row still counts.
                 if (!HasAvatar(page, top) && NameBox(page, new Band(top, top + S(AvatarSize)), S(NameLeft)) is null)
                 {
-                    if (expected is null) { ended = true; break; } // no count known: an empty row is the end
+                    if (expected is null || pastCount) { ended = true; break; } // an empty row is the end
                     unreadable++;
                     log($"  #{nextRow + 1}: 행을 찾지 못함 (y={top})");
                     nextRow++;
                     continue;
                 }
+                if (pastCount && nextRow == expected)
+                    log($"  카카오톡 표시 {expected}명보다 친구가 더 있습니다 (제목 숫자를 잘못 읽었을 수 있음). 목록 끝까지 읽습니다.");
                 rows.Add((nextRow++, new Band(top, top + S(AvatarSize))));
             }
 
@@ -123,7 +143,7 @@ static class FriendListReader
                 log($"{label} {name.Name}{(name.Uncertain ? "  (?)" : "")}{(showReadings ? " " + readings : "")}");
                 onName(name);
             }
-            return !ended && (expected is null || nextRow < expected);
+            return !ended;
         }
 
         public ReadSummary Finish()

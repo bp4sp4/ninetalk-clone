@@ -7,7 +7,7 @@
 // Env: NINETALK_ALLOWED_ORIGINS (comma list), KAKAO_MAC_BIN (path to the kakao-mac binary),
 // NINETALK_MAC_STATE_DIR (where the last send job is kept), NINETALK_MAC_PORT (tests).
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 // NINETALK_MAC_PORT is only for testing next to another daemon; the dashboard always calls 47301.
 const PORT = Number(process.env.NINETALK_MAC_PORT) || 47301;
-const VERSION = "0.1.0-mac";
+const VERSION = "0.1.1-mac";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.KAKAO_MAC_BIN || path.join(HERE, "build", "kakao-mac");
 const DRY_RUN = process.env.NINETALK_MAC_DRY_RUN === "1";
@@ -23,6 +23,10 @@ const DRY_RUN = process.env.NINETALK_MAC_DRY_RUN === "1";
 const VERSION_LABEL = DRY_RUN ? `${VERSION} (dry-run: 실제로 안 보냄)` : VERSION;
 // This many failures in a row with the same cause mean something is wrong with KakaoTalk itself: stop the job.
 const MAX_SAME_FAILURES = 3;
+// Images per job and their size, like the dashboard's own limits (5 images, 5MB each) with some room.
+const MAX_IMAGES = 5;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMAGE_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/heic": "heic" };
 // The last send job survives a restart, so the dashboard can still record who already got the message.
 const STATE_DIR = process.env.NINETALK_MAC_STATE_DIR || path.join(os.homedir(), "Library", "Application Support", "NineTalkMacDaemon");
 const JOB_FILE = path.join(STATE_DIR, "last-send.json");
@@ -54,9 +58,13 @@ class KakaoMacError extends Error {
   }
 }
 
+let runningChild = null; // the kakao-mac process in flight (one at a time, see kakao() below)
+
 function runKakao(args, timeoutMs) {
   return new Promise((resolve, reject) => {
-    execFile(BIN, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+    const child = execFile(BIN, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (runningChild === child) runningChild = null;
+      if (stderr && process.env.KAKAO_MAC_DEBUG === "1") process.stderr.write(stderr);
       if (error && !stdout) {
         // error.message repeats the command line (name and text), so only the cause is kept.
         const detail = error.killed
@@ -75,6 +83,7 @@ function runKakao(args, timeoutMs) {
       if (!out || typeof out !== "object" || Array.isArray(out)) return reject(new KakaoMacError("unexpected_output"));
       resolve(out);
     });
+    runningChild = child;
   });
 }
 
@@ -154,6 +163,10 @@ async function runSync(keyword) {
 // --- sending ------------------------------------------------------------------------------------
 
 let job = { job_id: null, state: "done", results: [], stopRequested: false, wake: null };
+// The recipient kakao-mac is working on (no result recorded yet) and the job's image folder, so an immediate
+// exit can still record that person and remove the images.
+let inFlight = null; // { id } | null
+let jobImageDir = null;
 
 function saveJob() {
   try {
@@ -190,12 +203,66 @@ function pause(seconds) {
   });
 }
 
-async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode }) {
+/** Checks the first bytes, so broken data is refused up front instead of failing once per recipient. */
+function looksLikeImage(data, ext) {
+  const head = data.subarray(0, 12);
+  switch (ext) {
+    case "png": return head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    case "jpg": return head[0] === 0xff && head[1] === 0xd8;
+    case "gif": return head.subarray(0, 3).toString("latin1") === "GIF";
+    case "webp": return head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP";
+    case "heic": return head.subarray(4, 8).toString("latin1") === "ftyp";
+    default: return false;
+  }
+}
+
+/** Image folders left by a run that was killed (they can hold customer images). */
+function removeLeftoverImages() {
+  try {
+    for (const name of readdirSync(STATE_DIR)) {
+      if (name.startsWith("images-")) rmSync(path.join(STATE_DIR, name), { recursive: true, force: true });
+    }
+  } catch {
+    // no state folder yet
+  }
+}
+
+/**
+ * Writes the job's images to a temporary folder for kakao-mac (it pastes each one into the chat).
+ * Throws BadRequest for anything that is not a small image.
+ */
+function writeImages(images) {
+  if (!Array.isArray(images) || images.length === 0) return { dir: null, paths: [] };
+  if (images.length > MAX_IMAGES) throw new BadRequest(`at most ${MAX_IMAGES} images`);
+  const decoded = images.map((image, i) => {
+    const ext = IMAGE_EXT[String(image?.mime ?? "").toLowerCase()];
+    if (!ext) throw new BadRequest("unsupported image type");
+    const data = Buffer.from(String(image?.data_base64 ?? ""), "base64");
+    if (data.length === 0 || data.length > MAX_IMAGE_BYTES) throw new BadRequest("image too large or empty");
+    if (!looksLikeImage(data, ext)) throw new BadRequest("not a valid image");
+    return { name: `${i + 1}.${ext}`, data };
+  });
+  const dir = path.join(STATE_DIR, `images-${process.pid}-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  const paths = decoded.map(({ name, data }) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, data);
+    return file;
+  });
+  return { dir, paths };
+}
+
+async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode, imageFiles, image_first }) {
   busy = "SendMessage";
   job = { job_id: job_id ?? null, state: "running", results: [], stopRequested: false, wake: null };
   saveJob();
+  const imagePaths = imageFiles?.paths ?? [];
+  jobImageDir = imageFiles?.dir ?? null;
+  // Above kakao-mac's own worst case (open the chat ~20 s, each image up to ~65 s with a 45 s upload wait,
+  // closing up to ~40 s), so a slow upload is not cut off and then wrongly recorded.
+  const perRecipientTimeout = 120000 + imagePaths.length * 75000;
   const intervalMs = intervalFor(interval_ms, speed_rate);
-  log(`발송 시작: ${recipients.length}명, ${intervalMs}ms 간격${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
+  log(`발송 시작: ${recipients.length}명, ${intervalMs}ms 간격${imagePaths.length ? `, 이미지 ${imagePaths.length}장${image_first ? " 먼저" : ""}` : ""}${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
   if (send_mode === "restart") log("맥에서는 카카오톡 재시작을 아직 하지 않습니다. 재시작 없이 계속 보냅니다.");
   let finalState = "done";
   let lastCause = null;
@@ -207,17 +274,24 @@ async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode 
         break;
       }
       const args = ["send", String(recipient.name).trim(), String(recipient.text ?? "")];
+      for (const file of imagePaths) args.push("--image", file);
+      if (imagePaths.length && image_first) args.push("--image-first");
       if (!DRY_RUN) args.push("--send");
       let out;
+      inFlight = { id: recipient.id };
       try {
-        out = await kakao(args, 60000);
+        out = await kakao(args, perRecipientTimeout);
       } catch (error) {
-        out = { result: "failed", error: "send_failed", detail: error.detail ?? "error" };
+        // kakao-mac was cut off or crashed: the text or an image may already have gone out, so this is not a
+        // plain failure that could be sent again; the dashboard says to check the chat.
+        // (A missing kakao-mac never ran, so that one is a plain failure.)
+        out = { result: "failed", error: error.detail === "binary_not_found" ? "send_failed" : "unknown_result", detail: error.detail ?? "error" };
       }
       const ok = out.result === "sent";
       // dry_run: nothing went out, so it must not be recorded as sent. input_not_empty: someone's unsent draft.
       const error = out.result === "dry_run_ok" ? "dry_run" : out.detail === "input_not_empty" ? "input_not_empty" : out.error;
       job.results.push(ok ? { id: recipient.id, status: "sent" } : { id: recipient.id, status: "failed", error });
+      inFlight = null;
       saveJob();
       log(`${i + 1}/${recipients.length}: ${ok ? out.result + (out.confirmed === false ? " (마지막 메시지 확인 못 함)" : "") : `failed ${error} ${out.detail ?? ""}`}`);
       if (!ok && out.error === "kakao_not_ready") {
@@ -248,9 +322,12 @@ async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode 
     }
     if (job.stopRequested && finalState === "done" && job.results.length < recipients.length) finalState = "stopped";
   } finally {
+    inFlight = null;
     job.state = finalState;
     job.wake = null;
     saveJob();
+    if (imageFiles?.dir) rmSync(imageFiles.dir, { recursive: true, force: true });
+    jobImageDir = null;
     busy = null;
     log(`발송 끝: ${finalState}`);
   }
@@ -272,11 +349,16 @@ function send(res, origin, code, body) {
 class BadRequest extends Error {}
 
 async function readJson(req) {
-  let raw = "";
+  // 5 images of 5 MB are ~35 MB as base64. Chunks are joined as bytes and decoded once, so a Korean character
+  // split across two chunks is not garbled.
+  const chunks = [];
+  let size = 0;
   for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 32 * 1024 * 1024) throw new BadRequest("body too large");
+    size += chunk.length;
+    if (size > 64 * 1024 * 1024) throw new BadRequest("body too large");
+    chunks.push(chunk);
   }
+  const raw = Buffer.concat(chunks).toString("utf8");
   try {
     return raw ? JSON.parse(raw) : {};
   } catch {
@@ -313,6 +395,10 @@ const server = createServer(async (req, res) => {
       return send(res, origin, 200, {
         status,
         version: VERSION_LABEL,
+        images: true, // this PC program can send images
+        // Separate from status (which stays "SendMessage" while a last recipient finishes), so a newly started
+        // desktop app can wait for this process to exit instead of adopting it.
+        shutting_down: shuttingDown || undefined,
         dry_run: DRY_RUN || undefined,
         current_sync_cnt: sync.count,
         current_sent_order: status === "SendMessage" ? job.results.length : undefined,
@@ -350,13 +436,16 @@ const server = createServer(async (req, res) => {
       if (recipients.length === 0 || recipients.some((r) => !String(r?.name ?? "").trim())) {
         return send(res, origin, 400, { ok: false, error: "recipients required" });
       }
-      // Image sending is not implemented yet. Refusing the job is safer than sending only the text.
-      if (Array.isArray(body.images) && body.images.length > 0) return send(res, origin, 400, { ok: false, error: "images_not_supported" });
+      const imageCount = Array.isArray(body.images) ? body.images.length : 0;
+      if (recipients.some((r) => !String(r?.text ?? "").trim()) && imageCount === 0) {
+        return send(res, origin, 400, { ok: false, error: "text or images required" });
+      }
       if (shuttingDown) return send(res, origin, 409, { ok: false, status: "ShuttingDown" });
       const status = await currentStatus();
       // Checked again after the await: another request may have started a job meanwhile.
       if (status !== "Ready" || busy || shuttingDown) return send(res, origin, 409, { ok: false, status: busy ?? (shuttingDown ? "ShuttingDown" : status) });
-      runSend({ ...body, recipients });
+      const imageFiles = writeImages(body.images); // throws BadRequest (400) for anything that is not a small image
+      runSend({ ...body, recipients, imageFiles });
       return send(res, origin, 202, { ok: true });
     }
     if (req.method === "GET" && pathname === "/send/result") {
@@ -370,13 +459,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && pathname === "/shutdown") {
       send(res, origin, 202, { ok: true });
-      shuttingDown = true;
-      job.stopRequested = true;
-      job.wake?.();
-      // Let the KakaoTalk operation in progress (and any queued status check) finish: kakao-mac restores
-      // KakaoTalk itself, and the send loop records and saves the recipient's result before it stops.
-      const exitWhenIdle = () => (queued > 0 || busy ? setTimeout(exitWhenIdle, 200) : process.exit(0));
-      return setTimeout(exitWhenIdle, 50);
+      return gracefulShutdown("shutdown request");
     }
     send(res, origin, 404, { ok: false, error: "not found" });
   } catch (error) {
@@ -388,6 +471,62 @@ server.on("error", (error) => {
   console.error(`localhost:${PORT} 를 열지 못했습니다 (${error.code}). 다른 PC 프로그램이나 mock-daemon 이 켜져 있는지 확인하세요.`);
   process.exit(1);
 });
+/**
+ * Stops after the KakaoTalk operation in progress (and any queued status check): kakao-mac restores
+ * KakaoTalk itself, and the send loop records and saves the recipient's result before it stops.
+ */
+function gracefulShutdown(reason) {
+  if (shuttingDown) return;
+  log(`종료: ${reason}`);
+  shuttingDown = true;
+  job.stopRequested = true;
+  job.wake?.();
+  const exitWhenIdle = () => (queued > 0 || busy ? setTimeout(exitWhenIdle, 200) : process.exit(0));
+  setTimeout(exitWhenIdle, 50);
+}
+
+// Started by the desktop app (NINETALK_PARENT_PID): if the app dies without asking us to stop (crash, force
+// quit) we would keep port 47301 for an old version, so exit like /shutdown. Not when run by hand.
+const parentPid = Number(process.env.NINETALK_PARENT_PID) || 0;
+if (parentPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      gracefulShutdown("앱이 종료됨");
+    }
+  }, 2000).unref();
+}
+/**
+ * Exits now, without waiting for kakao-mac. The person it was working on may or may not have received the
+ * message, so they are saved as unknown_result (the dashboard says to check the chat and does not send again),
+ * and kakao-mac is told to stop too (it cancels an open image sheet and restores the clipboard on SIGTERM)
+ * instead of being left running on its own.
+ */
+function exitNow(reason) {
+  log(`바로 종료: ${reason}`);
+  if (inFlight && job.state === "running") {
+    job.results.push({ id: inFlight.id, status: "failed", error: "unknown_result" });
+    inFlight = null;
+  }
+  if (job.state === "running") job.state = "stopped";
+  saveJob();
+  try {
+    runningChild?.kill("SIGTERM");
+  } catch {
+    // already gone
+  }
+  if (jobImageDir) rmSync(jobImageDir, { recursive: true, force: true });
+  process.exit(1);
+}
+
+// First SIGTERM: stop like /shutdown. A second one (the app's kill after /shutdown, or a stuck run): exit now.
+process.on("SIGTERM", () => (shuttingDown ? exitNow("SIGTERM") : gracefulShutdown("SIGTERM")));
+// Our parent's end of the log pipe may be gone; a failed log write must not kill a send in progress.
+process.stdout.on("error", () => {});
+process.stderr.on("error", () => {});
+
+removeLeftoverImages();
 loadJob();
 server.listen(PORT, "127.0.0.1", () => {
   log(`NineTalk Mac daemon on http://localhost:${PORT}${DRY_RUN ? " (dry-run)" : ""}, allowed origins: ${[...ALLOWED_ORIGINS].join(", ")}`);

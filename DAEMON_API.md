@@ -33,6 +33,8 @@
 | `DaemonBroken` | (맥) PC 프로그램의 카카오톡 조작 도구(`kakao-mac`)가 없거나 실행할 수 없음 |
 | `ShuttingDown` | PC 프로그램이 종료하는 중. 새 작업은 409 `{ "status": "ShuttingDown" }` |
 
+- `images` (선택, `bool`): 이 PC 프로그램이 이미지 발송을 지원하면 `true`(맥, Windows 둘 다. Windows 는 PNG·JPG·GIF·BMP 만, WebP·HEIC 는 `400 unsupported image type`). 웹은 이 값이 `true` 일 때만 이미지가 있는 요청의 발송 버튼을 엽니다. 지원하지 않는 PC 프로그램은 이미지가 있는 `/send` 를 `400 images_not_supported` 로 거절합니다.
+
 ## POST /friends/synchronize
 
 PC 카카오톡 친구 탭에서 친구 이름을 읽기 시작합니다. 바로 응답하고, 실제 작업은 백그라운드에서 진행합니다.
@@ -133,7 +135,7 @@ PC 카카오톡 친구 탭에서 친구 이름을 읽기 시작합니다. 바로
 
 - `state`: `running` | `done` | `stopped` | `failed`(작업 전체가 중단된 오류, 예: 카카오톡 꺼짐) 
 - `results`: 지금까지 처리한 수신자만, 처리한 순서대로. 아직 안 한 사람은 없습니다.
-- `error` 코드: `not_found`, `duplicate_name`, `room_mismatch`, `send_failed`, `kakao_not_ready`, `input_not_empty`(채팅방 입력창에 쓰던 글이 있어 손대지 않음, 맥), `dry_run`(시험 실행이라 안 보냄, 맥 `NINETALK_MAC_DRY_RUN=1`)
+- `error` 코드: `not_found`, `duplicate_name`, `room_mismatch`, `send_failed`, `kakao_not_ready`, `input_not_empty`(채팅방 입력창에 쓰던 글이 있어 손대지 않음), `partial_sent`(문구·이미지 중 일부만 나감 — 다시 보내면 중복되니 채팅방에서 확인), `unknown_result`(보냈는지 알 수 없음 — 조작 도중 끊김, 닫히지 않은 카카오톡 창 등. 채팅방에서 확인), `dry_run`(시험 실행이라 안 보냄, 맥 `NINETALK_MAC_DRY_RUN=1`)
 - 마지막 작업 결과는 다음 `POST /send` 전까지 남아 있어야 합니다(웹 탭을 새로 고쳐도 결과를 받을 수 있게).
 
 ### POST /send/stop

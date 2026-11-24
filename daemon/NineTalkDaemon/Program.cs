@@ -21,11 +21,15 @@ static class Program
             return;
         }
 
-        // --send-test <name> <text> [--send]: one recipient through the same code as POST /send.
-        // Dry-run (stops before Enter in the chat) unless --send is given.
+        // --send-test <name> <text> [--image <file>]... [--image-first] [--send]: one recipient through the
+        // same code as POST /send. Dry-run (puts the text in and clears it, opens the image window and cancels
+        // it) unless --send is given. Text "" sends only the images.
         if (args.Length > 2 && args[0] == "--send-test")
         {
-            SendTest(args[1], args[2], dryRun: !args.Contains("--send"));
+            var images = new List<byte[]>();
+            for (int i = 3; i < args.Length - 1; i++)
+                if (args[i] == "--image") images.Add(File.ReadAllBytes(args[i + 1]));
+            SendTest(args[1], args[2], dryRun: !args.Contains("--send"), new SendService.Attachments(images, args.Contains("--image-first")));
             return;
         }
 
@@ -54,7 +58,7 @@ static class Program
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool AttachConsole(int pid);
 
-    static void SendTest(string name, string text, bool dryRun)
+    static void SendTest(string name, string text, bool dryRun, SendService.Attachments attachments)
     {
         AttachConsole(-1);
         var log = Path.Combine(Path.GetDirectoryName(FriendSync.LogPath)!, "send-test.log");
@@ -66,7 +70,7 @@ static class Program
         sender.Log += Print;
         try
         {
-            var results = sender.RunNowAsync(new() { new SendService.Recipient(1, name, text) }, dryRun).GetAwaiter().GetResult();
+            var results = sender.RunNowAsync(new() { new SendService.Recipient(1, name, text) }, dryRun, attachments).GetAwaiter().GetResult();
             foreach (var r in results)
                 Print("결과: " + (r.Error is not null ? $"failed {r.Error}" : dryRun ? "dry-run ok (보내지 않음)" : "sent"));
         }

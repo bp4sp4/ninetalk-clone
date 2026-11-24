@@ -6,6 +6,12 @@ sealed class SendService
     public sealed record Recipient(long Id, string Name, string? Text);
     public sealed record Result(long Id, string Status, string? Error);
 
+    /// <summary>Images sent to every recipient, before or after the text (POST /send "images", "image_first").</summary>
+    public sealed record Attachments(IReadOnlyList<byte[]> Images, bool ImageFirst)
+    {
+        public static readonly Attachments None = new(Array.Empty<byte[]>(), false);
+    }
+
     /// <summary>
     /// Pacing from POST /send: pause after each recipient (on top of the ~3s one send takes), and in
     /// "restart" mode a KakaoTalk restart every <see cref="SplitCount"/> recipients.
@@ -44,7 +50,7 @@ sealed class SendService
     }
 
     /// <summary>Starts a job. Returns null when started, otherwise the status that prevents it.</summary>
-    public string? TryStart(long id, List<Recipient> recipients, Settings settings, bool dryRun = false)
+    public string? TryStart(long id, List<Recipient> recipients, Settings settings, bool dryRun = false, Attachments? attachments = null)
     {
         lock (gate)
         {
@@ -59,7 +65,7 @@ sealed class SendService
             state = "running";
             processed = 0;
             results = new List<Result>();
-            _ = Task.Run(() => Run(kakao, recipients, settings, dryRun, cts));
+            _ = Task.Run(() => Run(kakao, recipients, settings, attachments ?? Attachments.None, dryRun, cts));
             return null;
         }
     }
@@ -70,14 +76,14 @@ sealed class SendService
     }
 
     /// <summary>Runs a job on the calling thread and returns its results (used by --send-test).</summary>
-    public async Task<List<Result>> RunNowAsync(List<Recipient> recipients, bool dryRun)
+    public async Task<List<Result>> RunNowAsync(List<Recipient> recipients, bool dryRun, Attachments? attachments = null)
     {
-        if (TryStart(0, recipients, new Settings(2000, null, false), dryRun) is string refused) throw new InvalidOperationException("시작할 수 없음: " + refused);
+        if (TryStart(0, recipients, new Settings(2000, null, false), dryRun, attachments) is string refused) throw new InvalidOperationException("시작할 수 없음: " + refused);
         while (IsRunning) await Task.Delay(200);
         return Snapshot().results;
     }
 
-    async Task Run(KakaoWindow kakao, List<Recipient> recipients, Settings settings, bool dryRun, CancellationTokenSource cts)
+    async Task Run(KakaoWindow kakao, List<Recipient> recipients, Settings settings, Attachments attachments, bool dryRun, CancellationTokenSource cts)
     {
         var ct = cts.Token;
         bool wasShown = kakao.MainShown, wasIconic = Native.IsIconic(kakao.Main);
@@ -86,6 +92,7 @@ sealed class SendService
         string finalState = "done";
         Log?.Invoke($"발송 시작: {recipients.Count}명, {settings.IntervalMs}ms 간격"
             + (settings.Restart && settings.SplitCount is int every ? $", {every}명마다 카카오톡 재시작" : "")
+            + (attachments.Images.Count > 0 ? $", 이미지 {attachments.Images.Count}장{(attachments.ImageFirst ? " 먼저" : "")}" : "")
             + (dryRun ? " (dry-run)" : ""));
         try
         {
@@ -101,10 +108,14 @@ sealed class SendService
                 var r = recipients[i];
                 string? error;
                 if (!kakao.Ready) error = "kakao_not_ready";
-                else if (string.IsNullOrEmpty(r.Text)) error = "send_failed"; // image-only messages are not supported yet
+                else if (string.IsNullOrWhiteSpace(r.Text) && attachments.Images.Count == 0) error = "send_failed"; // nothing to send
                 else
                 {
-                    try { error = await KakaoSender.SendOneAsync(kakao, r.Name, r.Text, dryRun, m => Log?.Invoke(m), CancellationToken.None); }
+                    try
+                    {
+                        error = await KakaoSender.SendOneAsync(kakao, r.Name, string.IsNullOrWhiteSpace(r.Text) ? "" : r.Text, attachments.Images,
+                            attachments.ImageFirst, dryRun, m => Log?.Invoke(m), CancellationToken.None);
+                    }
                     catch (Exception ex) { Log?.Invoke($"  {r.Name}: {ex.Message}"); error = "send_failed"; }
                 }
                 Log?.Invoke($"{i + 1}/{recipients.Count} {r.Name}: {error ?? (dryRun ? "dry-run ok" : "sent")}");
