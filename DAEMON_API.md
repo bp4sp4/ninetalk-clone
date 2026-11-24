@@ -33,7 +33,7 @@
 | `DaemonBroken` | (맥) PC 프로그램의 카카오톡 조작 도구(`kakao-mac`)가 없거나 실행할 수 없음 |
 | `ShuttingDown` | PC 프로그램이 종료하는 중. 새 작업은 409 `{ "status": "ShuttingDown" }` |
 
-- `images` (선택, `bool`): 이 PC 프로그램이 이미지 발송을 지원하면 `true`(맥, Windows 둘 다. Windows 는 PNG·JPG·GIF·BMP 만, WebP·HEIC 는 `400 unsupported image type`). 웹은 이 값이 `true` 일 때만 이미지가 있는 요청의 발송 버튼을 엽니다. 지원하지 않는 PC 프로그램은 이미지가 있는 `/send` 를 `400 images_not_supported` 로 거절합니다.
+- `images` (선택, `bool`): 이 PC 프로그램이 이미지 발송을 지원하면 `true`(맥, Windows 둘 다. Windows 는 PNG·JPG·GIF·BMP 를 사진으로, WebP·HEIC 는 파일로 보냄). 웹은 이 값이 `true` 일 때만 이미지가 있는 요청의 발송 버튼을 엽니다. 지원하지 않는 PC 프로그램은 이미지가 있는 `/send` 를 `400 images_not_supported` 로 거절합니다.
 - `files` (선택, `bool`): 이미지가 아닌 파일(PDF·한글·엑셀·zip 등) 발송을 지원하면 `true`(Windows 0.1.6 부터, 맥은 아직). 웹은 파일이 있는 요청은 이 값이 `true` 일 때만 보냅니다. 지원하지 않는 PC 프로그램은 `400 files_not_supported`.
 
 ## POST /friends/synchronize
@@ -99,8 +99,8 @@ PC 카카오톡 친구 탭에서 친구 이름을 읽기 시작합니다. 바로
 - `id` 는 웹의 수신자 행 id 입니다. 결과를 돌려줄 때 그대로 씁니다.
 - `text` 는 웹에서 이미 이름·말투가 반영된 최종 문구입니다. 비어 있으면 이미지만 보냅니다.
 - `images` 는 0~5장, 수신자마다 같은 이미지를 보냅니다. `image_first` 가 `true` 면 이미지(와 파일)를 먼저 보냅니다.
-- `files` 는 이미지가 아닌 첨부 파일, 이미지 다음에 보냅니다. `name` 이 받는 사람에게 보이는 파일 이름입니다. 이미지와 합쳐 5개, 파일마다 20MB 까지(웹은 합쳐서 25MB). 실행 파일(.exe 등)·폴더가 든 이름은 `400 file name not allowed`, 너무 크거나 빈 파일은 `400 file too large or empty`, 5개 초과는 `400 at most 5 attachments`.
-- 파일은 카카오톡이 전송 창 없이 바로 보낼 수도 있어, 창이 뜨지 않았는데 보냈는지 알 수 없으면 `unknown_result` 로 돌려줍니다(다시 보내지 않게).
+- `files` 는 이미지가 아닌 첨부 파일, 이미지 다음에 보냅니다. `name` 이 받는 사람에게 보이는 파일 이름입니다. 이미지와 합쳐 5개, 파일마다 20MB 까지(웹은 합쳐서 25MB). 이름의 폴더 부분은 떼어 내고 Windows 에서 못 쓰는 글자는 `_` 로, 예약 이름(CON·NUL·COM1 등)은 앞에 `_` 를 붙입니다. 실행 파일(.exe 등)은 `400 file name not allowed`, 너무 크거나 빈 파일은 `400 file too large or empty`, 5개 초과는 `400 at most 5 attachments`.
+- 파일은 카카오톡이 전송 창 없이 바로 보낼 수도 있어, 창이 뜨지 않았는데 보냈는지 알 수 없으면 `unknown_result` 로 돌려주고(다시 보내지 않게) **작업을 멈춥니다**(모든 사람에게 같은 일이 생기므로, 남은 사람은 대기로). Windows 는 WebP·HEIC 사진을 사진 대신 파일로 보냅니다.
 - 발송 속도 (웹 작성 화면의 느리게 / 보통 / 빠르게 / 사용자화):
 
   | 설정 | `interval_ms` | `split_send_count` | `send_mode` |

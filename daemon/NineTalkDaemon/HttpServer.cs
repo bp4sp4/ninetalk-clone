@@ -12,7 +12,7 @@ namespace NineTalkDaemon;
 sealed class HttpServer : IDisposable
 {
     public const int Port = 47301;
-    public const string Version = "0.1.6";
+    public const string Version = "0.1.7";
 
     static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -197,13 +197,17 @@ sealed class HttpServer : IDisposable
             return;
         }
         // Refused up front, so broken data fails once instead of once per recipient.
-        var (images, imageError) = DecodeImages(body.Images);
+        // WebP and HEIC photos cannot be pasted as pictures here (GDI+ cannot open them): they go as files.
+        var sentImages = body.Images ?? new List<SendImage>();
+        var asFiles = sentImages.Where(i => FileOnlyImageMimes.Contains(i.Mime ?? "")).ToList();
+        var (images, imageError) = DecodeImages(sentImages.Where(i => !FileOnlyImageMimes.Contains(i.Mime ?? "")).ToList());
         if (imageError is not null)
         {
             await Send(res, origin, 400, new { ok = false, error = imageError });
             return;
         }
-        var (files, fileError) = DecodeFiles(body.Files);
+        var (files, fileError) = DecodeFiles(asFiles.Select((i, n) => i with { Name = string.IsNullOrWhiteSpace(i.Name) ? $"사진{n + 1}.{i.Mime!.Split('/')[1]}" : i.Name })
+            .Concat(body.Files ?? new List<SendImage>()).ToList());
         if (fileError is not null)
         {
             await Send(res, origin, 400, new { ok = false, error = fileError });
@@ -244,7 +248,8 @@ sealed class HttpServer : IDisposable
         {
             var name = Path.GetFileName((file.Name ?? "").Replace('/', '\\'));
             foreach (var bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
-            name = name.Trim().TrimEnd('.');
+            name = name.Trim().TrimEnd('.', ' ');
+            if (ReservedNames.Contains(name.Split('.')[0].Trim())) name = "_" + name;
             if (name.Length == 0 || name.Length > 150 || BlockedExtensions.Contains(Path.GetExtension(name))) return (list, "file name not allowed");
             byte[] data;
             try { data = Convert.FromBase64String(file.DataBase64 ?? ""); }
@@ -255,6 +260,11 @@ sealed class HttpServer : IDisposable
         return (list, null);
     }
     static readonly HashSet<string> ImageMimes = new(StringComparer.OrdinalIgnoreCase) { "image/png", "image/jpeg", "image/jpg", "image/gif", "image/bmp" };
+    static readonly HashSet<string> FileOnlyImageMimes = new(StringComparer.OrdinalIgnoreCase) { "image/webp", "image/heic", "image/heif" };
+    /// <summary>Device names Windows reserves: a file cannot be called CON.pdf or com1.hwp.</summary>
+    static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
+        { "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+          "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
 
     /// <summary>Base64 images from POST /send, checked to be small images this PC can decode (no WebP/HEIC).</summary>
     static (List<byte[]> images, string? error) DecodeImages(List<SendImage>? images)
