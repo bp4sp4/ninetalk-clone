@@ -5,7 +5,7 @@
 # - Push a tag vX.Y.Z (matching desktop/package.json "version"): builds both and publishes a GitHub
 #   pre-release with the installers attached.
 #
-# Unsigned for now. Signing later: add CSC_LINK / CSC_KEY_PASSWORD (+ APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# Mac: ad-hoc signed (desktop/package.json mac.identity "-"), not notarized. Windows: unsigned. Signing later: add CSC_LINK / CSC_KEY_PASSWORD (+ APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
 # APPLE_TEAM_ID for Mac notarization) as repository secrets and drop CSC_IDENTITY_AUTO_DISCOVERY below.
 name: desktop-release
 

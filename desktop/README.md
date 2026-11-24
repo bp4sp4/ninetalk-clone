@@ -33,6 +33,10 @@ npm run dist:mac           # dist/HanpyeongsaengTok-<버전>-mac-arm64.dmg (안�
 
 **맥 앱 이름**: 맥에서는 앱 파일·실행 파일 이름과 `CFBundleName` 이 한글이면 Electron 이 시작하자마자 죽습니다(2026-10-20 확인, 충돌 보고서상 Electron 시작 단계). 그래서 `dist:mac` 은 `-c.productName=HanpyeongsaengTok` 으로 영문 이름을 쓰고, Dock·메뉴에 보이는 이름만 `CFBundleDisplayName`=한평생톡 으로 둡니다(Finder 파일 이름은 `HanpyeongsaengTok.app`). 데이터 폴더는 Windows 와 같은 `한평생톡`.
 
+**맥 서명 (2026-11-24)**: Apple 개발자 서명은 없지만 `mac.identity: "-"` 로 **임시(ad-hoc) 서명**을 합니다. 서명을 건너뛰면 앱 안에 웹·데몬을 넣은 뒤 서명이 깨져서, 받은 맥이 "손상되었기 때문에 열 수 없습니다"라고 막습니다. 임시 서명이면 처음 한 번 "확인할 수 없는 개발자" 경고가 뜨고, 시스템 설정 > 개인정보 보호 및 보안 > **그래도 열기**로 열 수 있습니다(공증까지 하려면 Apple 개발자 등록 필요).
+- 앱이 실행 중에 자기 안의 파일을 바꾸면 서명이 다시 깨집니다. 그래서 웹 서버의 페이지 캐시를 디스크에 쓰지 않게 했습니다(`web/next.config.ts` 의 `experimental.isrFlushToDisk: false`). 데이터는 원래 앱 밖(사용자 데이터 폴더)에 씁니다.
+- **iCloud 폴더에서는 맥 서명 빌드가 실패합니다**("resource fork, Finder information, or similar detritus not allowed"). iCloud 가 파일에 부가 속성을 계속 붙이기 때문입니다. 저장소를 iCloud 밖으로 옮기거나, 결과 폴더만 밖으로: `npm run dist:mac -- -c.directories.output=/tmp/hp-dist`. GitHub Actions 에서는 해당 없음.
+
 화면 작업은 지금처럼 `../web` 에서 `npm run dev` + `npm run mock-daemon` 으로 브라우저에서 하는 게 빠릅니다.
 맥에서는 처음 실행할 때 **손쉬운 사용 권한**을 묻습니다(시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용). 허용 전에는 사이드바가 "손쉬운 사용 권한 필요". 서명 안 한 앱이라 다시 빌드하면 권한을 다시 줘야 할 수 있습니다. 자세한 것은 [`../daemon-mac/README.md`](../daemon-mac/README.md).
 
