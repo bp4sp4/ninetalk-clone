@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 // NINETALK_MAC_PORT is only for testing next to another daemon; the dashboard always calls 47301.
 const PORT = Number(process.env.NINETALK_MAC_PORT) || 47301;
-const VERSION = "0.1.5-mac";
+const VERSION = "0.1.6-mac";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.KAKAO_MAC_BIN || path.join(HERE, "build", "kakao-mac");
 const DRY_RUN = process.env.NINETALK_MAC_DRY_RUN === "1";
@@ -436,6 +436,8 @@ const server = createServer(async (req, res) => {
       if (recipients.length === 0 || recipients.some((r) => !String(r?.name ?? "").trim())) {
         return send(res, origin, 400, { ok: false, error: "recipients required" });
       }
+      // Files (not images) are not sent from the Mac yet; refuse the job rather than send only part of it.
+      if (Array.isArray(body.files) && body.files.length > 0) return send(res, origin, 400, { ok: false, error: "files_not_supported" });
       const imageCount = Array.isArray(body.images) ? body.images.length : 0;
       if (recipients.some((r) => !String(r?.text ?? "").trim()) && imageCount === 0) {
         return send(res, origin, 400, { ok: false, error: "text or images required" });

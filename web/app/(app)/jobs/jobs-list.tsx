@@ -16,6 +16,7 @@ import {
   getSendResult,
   startSend,
   stopSend,
+  type DaemonStatus,
   type SendRunState,
 } from "@/lib/daemon";
 
@@ -39,16 +40,32 @@ const formatTime = (value: string) =>
 
 type ActiveRun = { jobId: number; handled: number; total: number };
 
+type Support = { images: boolean; files: boolean };
+const supportOf = (status: DaemonStatus): Support => ({ images: status.images === true, files: status.files === true });
+
+/** "사진 2장", "파일 1개", "사진 1장·파일 1개". */
+function attachmentLabel(job: JobSummary) {
+  const photos = job.fileCount - job.documentCount;
+  return [photos > 0 && `사진 ${photos}장`, job.documentCount > 0 && `파일 ${job.documentCount}개`].filter(Boolean).join("·");
+}
+
+/** Why this PC program cannot send the job's attachments, or null. */
+function unsupportedReason(job: JobSummary, support: Support) {
+  if (job.documentCount > 0 && !support.files) return "이 PC 프로그램은 파일을 보낼 수 없습니다(지금은 Windows PC 프로그램만 지원).";
+  if (job.fileCount > job.documentCount && !support.images) return "이 PC 프로그램은 사진을 보낼 수 없습니다. 앱을 새 버전으로 업데이트해 주세요.";
+  return null;
+}
+
 export function JobsList({ jobs }: { jobs: JobSummary[] }) {
   const { pending, notice, setNotice, run } = useAction();
   const [active, setActive] = useState<ActiveRun | null>(null);
   const [starting, setStarting] = useState(false);
-  // Whether the PC program can send images (the Mac one can; the Windows one cannot yet). null = unknown.
-  const [imagesSupported, setImagesSupported] = useState<boolean | null>(null);
+  // What the PC program can send besides text (images: Mac and Windows; files: Windows). null = unknown.
+  const [support, setSupport] = useState<Support | null>(null);
   useEffect(() => {
     getDaemonStatus()
-      .then((status) => setImagesSupported(status.images === true))
-      .catch(() => setImagesSupported(null));
+      .then((status) => setSupport(supportOf(status)))
+      .catch(() => setSupport(null));
   }, []);
   // Results already written to the server for the active run (the daemon returns the whole list each time).
   const recorded = useRef(0);
@@ -124,23 +141,24 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
     const remaining = job.total - job.sent - job.failed;
     if (job.fileCount > 0) {
       // Ask before the confirm dialog: a request the PC program would refuse should not ask "send?" first.
-      const supported = await getDaemonStatus()
-        .then((status) => status.images === true)
+      const current = await getDaemonStatus()
+        .then(supportOf)
         .catch(() => null);
-      // null: the PC program did not answer — that says nothing about images, so the button stays usable.
-      setImagesSupported(supported);
-      if (supported === null) {
+      // null: the PC program did not answer — that says nothing about attachments, so the button stays usable.
+      setSupport(current);
+      if (current === null) {
         setNotice({ tone: "error", text: "PC 프로그램이 켜져 있지 않습니다. PC 프로그램을 실행한 뒤 다시 눌러 주세요." });
         return;
       }
-      if (!supported) {
-        setNotice({ tone: "error", text: "이 PC 프로그램은 아직 이미지를 보낼 수 없습니다(지금은 맥 PC 프로그램만 지원)." });
+      const refusal = unsupportedReason(job, current);
+      if (refusal) {
+        setNotice({ tone: "error", text: refusal });
         return;
       }
     }
     if (
       !confirm(
-        `${remaining}명에게 PC 카카오톡으로 실제 메시지를 보냅니다${job.fileCount > 0 ? ` (이미지 ${job.fileCount}장 포함)` : ""}.\n` +
+        `${remaining}명에게 PC 카카오톡으로 실제 메시지를 보냅니다${job.fileCount > 0 ? ` (${attachmentLabel(job)} 포함)` : ""}.\n` +
           "보내는 동안 이 화면을 열어 두고, PC 카카오톡은 건드리지 마세요.",
       )
     )
@@ -241,7 +259,7 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium">{job.title}</p>
                 <p className="text-xs text-muted">
-                  {formatTime(job.createdAt)} · {job.total}명{job.fileCount > 0 && ` · 이미지 ${job.fileCount}장`}
+                  {formatTime(job.createdAt)} · {job.total}명{job.fileCount > 0 && ` · ${attachmentLabel(job)}`}
                   {(job.sent > 0 || job.failed > 0) && ` · 성공 ${job.sent} / 실패 ${job.failed}`}
                 </p>
                 {job.status === "sending" && (
@@ -261,8 +279,8 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
                     </ul>
                   </details>
                 )}
-                {job.status === "queued" && job.fileCount > 0 && imagesSupported === false && (
-                  <p className="mt-1 text-xs text-muted">이 PC 프로그램은 아직 이미지를 보낼 수 없습니다(지금은 맥 PC 프로그램만 지원).</p>
+                {job.status === "queued" && support && unsupportedReason(job, support) && (
+                  <p className="mt-1 text-xs text-muted">{unsupportedReason(job, support)}</p>
                 )}
               </div>
               {job.status === "queued" && (
@@ -270,7 +288,7 @@ export function JobsList({ jobs }: { jobs: JobSummary[] }) {
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={starting || pending || active !== null || (job.fileCount > 0 && imagesSupported === false)}
+                    disabled={starting || pending || active !== null || (support !== null && unsupportedReason(job, support) !== null)}
                     onClick={() => start(job)}
                   >
                     PC 프로그램으로 발송

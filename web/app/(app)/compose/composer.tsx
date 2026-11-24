@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NoticeBar } from "@/components/notice-bar";
 import { useAction } from "@/components/use-action";
 import { createSendJob } from "@/lib/actions";
+import { MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentProblem, formatBytes, isImageType } from "@/lib/attachments";
 import type { Friend, Group, SenderType } from "@/lib/data";
 import { NAME_TOKEN, renderMessage } from "@/lib/message";
 import {
@@ -19,8 +20,6 @@ import {
   type SpeedSetting,
 } from "@/lib/send-speed";
 
-const MAX_FILES = 5;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const SPEED_OPTIONS: { key: SpeedPreset; label: string; detail: string }[] = [
   ...(Object.entries(SPEED_PRESETS) as [Exclude<SpeedPreset, "custom">, (typeof SPEED_PRESETS)["slow"]][]).map(([key, preset]) => ({
     key,
@@ -32,7 +31,8 @@ const SPEED_OPTIONS: { key: SpeedPreset; label: string; detail: string }[] = [
 const AD_PREFIX = "(광고) ";
 const AD_FOOTER = "\n\n무료 수신거부: 이 채팅방에 '수신거부'라고 보내 주세요.";
 
-type Attachment = { file: File; url: string };
+/** url: a preview for images; null for other files (shown as a file card). */
+type Attachment = { file: File; url: string | null };
 
 export function Composer({ groups, friends }: { groups: Group[]; friends: Friend[] }) {
   const { pending, notice, setNotice, run } = useAction();
@@ -61,12 +61,14 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
-  useEffect(() => () => attachmentsRef.current.forEach((attachment) => URL.revokeObjectURL(attachment.url)), []);
+  const revoke = (attachment: Attachment) => attachment.url && URL.revokeObjectURL(attachment.url);
+  useEffect(() => () => attachmentsRef.current.forEach(revoke), []);
 
   const removeAttachment = (index: number) => {
-    URL.revokeObjectURL(attachments[index].url);
+    revoke(attachments[index]);
     setAttachments(attachments.filter((_, i) => i !== index));
   };
+  const hasDocuments = attachments.some((attachment) => attachment.url === null);
 
   const recipients = useMemo(
     () => friends.filter((friend) => extraIds.has(friend.id) || friend.groupIds.some((id) => groupIds.has(id))),
@@ -105,11 +107,27 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
   const addFiles = (list: FileList | null) => {
     if (!list) return;
     const incoming = [...list];
-    const rejected = incoming.filter((file) => !file.type.startsWith("image/") || file.size > MAX_FILE_BYTES);
-    const accepted = incoming.filter((file) => !rejected.includes(file)).slice(0, MAX_FILES - attachments.length);
-    setAttachments([...attachments, ...accepted.map((file) => ({ file, url: URL.createObjectURL(file) }))]);
-    if (rejected.length > 0) setNotice({ tone: "error", text: "5MB 이하 이미지 파일만 첨부할 수 있습니다." });
-    else if (accepted.length < incoming.length) setNotice({ tone: "error", text: `이미지는 ${MAX_FILES}장까지 첨부할 수 있습니다.` });
+    const problems = incoming.map(attachmentProblem);
+    let total = attachments.reduce((sum, attachment) => sum + attachment.file.size, 0);
+    const accepted: File[] = [];
+    let overTotal = false;
+    incoming.forEach((file, index) => {
+      if (problems[index] || attachments.length + accepted.length >= MAX_ATTACHMENTS) return;
+      if (total + file.size > MAX_TOTAL_BYTES) {
+        overTotal = true;
+        return;
+      }
+      total += file.size;
+      accepted.push(file);
+    });
+    setAttachments([
+      ...attachments,
+      ...accepted.map((file) => ({ file, url: isImageType(file.type) ? URL.createObjectURL(file) : null })),
+    ]);
+    const firstProblem = problems.find(Boolean);
+    if (firstProblem) setNotice({ tone: "error", text: firstProblem });
+    else if (overTotal) setNotice({ tone: "error", text: "첨부한 사진·파일은 합쳐서 25MB까지입니다." });
+    else if (accepted.length < incoming.length) setNotice({ tone: "error", text: `사진·파일은 ${MAX_ATTACHMENTS}개까지 첨부할 수 있습니다.` });
   };
 
   const toggleSet = (setter: typeof setGroupIds, id: number) =>
@@ -146,7 +164,7 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
         setSubmitted(true);
         setHonorific("");
         setTalkdown("");
-        attachments.forEach((attachment) => URL.revokeObjectURL(attachment.url));
+        attachments.forEach(revoke);
         setAttachments([]);
         setExtraIds(new Set());
       },
@@ -294,12 +312,22 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
           </section>
 
           <section className="card p-5">
-            <h2 className="mb-3 font-bold">3. 이미지 (선택)</h2>
+            <h2 className="mb-3 font-bold">3. 사진·파일 (선택)</h2>
             <div className="flex flex-wrap gap-3">
               {attachments.map((attachment, index) => (
-                <div key={attachment.url} className="relative h-24 w-24 overflow-hidden rounded-lg border border-border">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={attachment.url} alt={attachment.file.name} className="h-full w-full object-cover" />
+                <div key={attachment.url ?? `${attachment.file.name}-${index}`} className="relative h-24 w-24 overflow-hidden rounded-lg border border-border">
+                  {attachment.url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={attachment.url} alt={attachment.file.name} className="h-full w-full object-cover" />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-black/[0.03] px-2 text-center">
+                      <span className="text-2xl" aria-hidden>
+                        📄
+                      </span>
+                      <span className="line-clamp-2 w-full text-[11px] leading-tight break-all">{attachment.file.name}</span>
+                      <span className="text-[10px] text-muted">{formatBytes(attachment.file.size)}</span>
+                    </div>
+                  )}
                   <button
                     type="button"
                     aria-label={`${attachment.file.name} 빼기`}
@@ -310,13 +338,12 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
                   </button>
                 </div>
               ))}
-              {attachments.length < MAX_FILES && (
+              {attachments.length < MAX_ATTACHMENTS && (
                 <label className="flex h-24 w-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-border text-xs text-muted hover:bg-black/[0.02]">
                   <span className="text-xl">＋</span>
-                  {attachments.length}/{MAX_FILES}
+                  {attachments.length}/{MAX_ATTACHMENTS}
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/gif,image/webp"
                     multiple
                     className="sr-only"
                     onChange={(event) => {
@@ -330,9 +357,13 @@ export function Composer({ groups, friends }: { groups: Group[]; friends: Friend
             {attachments.length > 0 && (
               <label className="mt-3 flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={imageFirst} onChange={(event) => setImageFirst(event.target.checked)} />
-                이미지를 글보다 먼저 보내기
+                사진·파일을 글보다 먼저 보내기
               </label>
             )}
+            <p className="mt-3 text-xs text-muted">
+              사진(PNG·JPG·GIF·WebP)은 5MB, 파일(PDF·한글·엑셀·zip 등)은 20MB까지, 합쳐서 25MB·{MAX_ATTACHMENTS}개까지. 실행 파일은 보낼 수 없습니다.
+              {hasDocuments && " 파일 발송은 Windows PC 프로그램만 됩니다(맥은 준비 중)."}
+            </p>
           </section>
 
           <section className="card p-5">
@@ -460,10 +491,18 @@ function PreviewImages({ attachments }: { attachments: Attachment[] }) {
   if (attachments.length === 0) return null;
   return (
     <div className="ml-auto flex max-w-[85%] flex-wrap justify-end gap-1">
-      {attachments.map((attachment) => (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img key={attachment.url} src={attachment.url} alt="" className="h-28 w-28 rounded-lg object-cover" />
-      ))}
+      {attachments.map((attachment, index) =>
+        attachment.url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={attachment.url} src={attachment.url} alt="" className="h-28 w-28 rounded-lg object-cover" />
+        ) : (
+          <div key={`${attachment.file.name}-${index}`} className="flex w-full items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs text-black">
+            <span aria-hidden>📄</span>
+            <span className="min-w-0 flex-1 truncate">{attachment.file.name}</span>
+            <span className="text-black/50">{formatBytes(attachment.file.size)}</span>
+          </div>
+        ),
+      )}
     </div>
   );
 }

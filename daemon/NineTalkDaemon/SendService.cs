@@ -6,11 +6,33 @@ sealed class SendService
     public sealed record Recipient(long Id, string Name, string? Text);
     public sealed record Result(long Id, string Status, string? Error);
 
-    /// <summary>Images sent to every recipient, before or after the text (POST /send "images", "image_first").</summary>
-    public sealed record Attachments(IReadOnlyList<byte[]> Images, bool ImageFirst)
+    /// <summary>A file attachment: the name the recipient sees, and its bytes.</summary>
+    public sealed record SendFile(string Name, byte[] Data);
+
+    /// <summary>
+    /// Images and files sent to every recipient, before or after the text (POST /send "images", "files",
+    /// "image_first"). Images go first, then files.
+    /// </summary>
+    public sealed record Attachments(IReadOnlyList<byte[]> Images, IReadOnlyList<SendFile> Files, bool ImageFirst)
     {
-        public static readonly Attachments None = new(Array.Empty<byte[]>(), false);
+        public static readonly Attachments None = new(Array.Empty<byte[]>(), Array.Empty<SendFile>(), false);
+        public int Count => Images.Count + Files.Count;
     }
+
+    /// <summary>Removes the folders of earlier jobs' files.</summary>
+    static void RemoveFileFolders()
+    {
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(FilesRoot, "files-*"))
+                try { Directory.Delete(dir, recursive: true); } catch { /* in use: next time */ }
+        }
+        catch { /* no folder yet */ }
+    }
+
+    /// <summary>Where a job's files are written for pasting (KakaoTalk reads them while it uploads).</summary>
+    static readonly string FilesRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NineTalkDaemon");
 
     /// <summary>
     /// Pacing from POST /send: pause after each recipient (on top of the ~3s one send takes), and in
@@ -109,10 +131,27 @@ sealed class SendService
         string finalState = "done";
         Write($"발송 시작: {recipients.Count}명, {settings.IntervalMs}ms 간격"
             + (settings.Restart && settings.SplitCount is int every ? $", {every}명마다 카카오톡 재시작" : "")
-            + (attachments.Images.Count > 0 ? $", 이미지 {attachments.Images.Count}장{(attachments.ImageFirst ? " 먼저" : "")}" : "")
+            + (attachments.Images.Count > 0 ? $", 이미지 {attachments.Images.Count}장" : "")
+            + (attachments.Files.Count > 0 ? $", 파일 {attachments.Files.Count}개" : "")
+            + (attachments.Count > 0 && attachments.ImageFirst ? " (첨부 먼저)" : "")
             + (dryRun ? " (dry-run)" : ""));
+        // Files are written once per job, each in a folder of its own so the recipient sees its original name.
+        // Kept a few minutes after the job (KakaoTalk may still be reading the last one); folders left by an
+        // earlier job are removed first (they can hold customers' files).
+        var filesDir = Path.Combine(FilesRoot, $"files-{Environment.ProcessId}-{DateTime.Now.Ticks}");
+        var filePaths = new List<string>();
         try
         {
+            RemoveFileFolders();
+            for (int n = 0; n < attachments.Files.Count; n++)
+            {
+                var dir = Path.Combine(filesDir, (n + 1).ToString());
+                Directory.CreateDirectory(dir);
+                var filePath = Path.Combine(dir, attachments.Files[n].Name);
+                File.WriteAllBytes(filePath, attachments.Files[n].Data);
+                filePaths.Add(filePath);
+            }
+
             if (!wasShown)
             {
                 Native.ShowWindow(kakao.Main, Native.SW_SHOWNOACTIVATE);
@@ -125,13 +164,13 @@ sealed class SendService
                 var r = recipients[i];
                 string? error;
                 if (!kakao.Ready) error = "kakao_not_ready";
-                else if (string.IsNullOrWhiteSpace(r.Text) && attachments.Images.Count == 0) error = "send_failed"; // nothing to send
+                else if (string.IsNullOrWhiteSpace(r.Text) && attachments.Count == 0) error = "send_failed"; // nothing to send
                 else
                 {
                     try
                     {
                         error = await KakaoSender.SendOneAsync(kakao, r.Name, string.IsNullOrWhiteSpace(r.Text) ? "" : r.Text, attachments.Images,
-                            attachments.ImageFirst, dryRun, m => Write(m), CancellationToken.None);
+                            filePaths, attachments.ImageFirst, dryRun, m => Write(m), CancellationToken.None);
                     }
                     catch (Exception ex) { Write($"  #{r.Id}: {ex.Message}"); error = "send_failed"; }
                 }
@@ -187,6 +226,12 @@ sealed class SendService
             catch { /* restoring is best effort */ }
             lock (gate) { state = finalState; running = null; }
             Write($"발송 끝: {finalState}");
+            if (filePaths.Count > 0)
+                _ = Task.Delay(TimeSpan.FromMinutes(5)).ContinueWith(_ =>
+                {
+                    // Only this job's folder: a later job may be using its own by then.
+                    try { Directory.Delete(filesDir, recursive: true); } catch { /* the next job removes it */ }
+                }, TaskScheduler.Default);
             cts.Dispose();
             file?.Dispose();
         }

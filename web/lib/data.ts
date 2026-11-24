@@ -27,7 +27,10 @@ export type JobSummary = {
   total: number;
   sent: number;
   failed: number;
+  /** All attachments (photos and files). */
   fileCount: number;
+  /** Attachments that are not photos (sent as KakaoTalk files). */
+  documentCount: number;
   createdAt: string;
   failures: { name: string; error: string | null }[];
 };
@@ -90,7 +93,9 @@ export async function getJobs(limit = 50): Promise<JobSummary[]> {
               (SELECT count(*) FROM send_job_recipients r WHERE r.job_id = j.id) AS total,
               (SELECT count(*) FROM send_job_recipients r WHERE r.job_id = j.id AND r.status = 'sent') AS sent,
               (SELECT count(*) FROM send_job_recipients r WHERE r.job_id = j.id AND r.status = 'failed') AS failed,
-              (SELECT count(*) FROM send_job_files f WHERE f.job_id = j.id) AS file_count
+              (SELECT count(*) FROM send_job_files f WHERE f.job_id = j.id) AS file_count,
+              (SELECT count(*) FROM send_job_files f WHERE f.job_id = j.id
+                 AND f.mime NOT IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')) AS document_count
        FROM send_jobs j WHERE j.user_id = ? ORDER BY j.id DESC LIMIT ?`,
     )
     .all(user.id, limit) as {
@@ -102,6 +107,7 @@ export async function getJobs(limit = 50): Promise<JobSummary[]> {
     sent: number;
     failed: number;
     file_count: number;
+    document_count: number;
   }[];
 
   const failuresOf = db.prepare(
@@ -116,6 +122,7 @@ export async function getJobs(limit = 50): Promise<JobSummary[]> {
     sent: row.sent,
     failed: row.failed,
     fileCount: row.file_count,
+    documentCount: row.document_count,
     createdAt: row.created_at,
     // node:sqlite rows have a null prototype, which React will not pass to a Client Component.
     failures:

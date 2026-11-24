@@ -25,6 +25,8 @@ export type DaemonStatus = {
   current_sent_order?: number;
   /** True when this PC program can send images (Mac and Windows PC programs from 0.1.1). */
   images?: boolean;
+  /** True when this PC program can send other files ("files" in POST /send; the Windows one from 0.1.6). */
+  files?: boolean;
   /** Why the last sync failed; the daemon returns to Ready either way. */
   last_error?: string | null;
 };
@@ -59,6 +61,10 @@ export const DAEMON_STATE_LABELS: Record<string, string> = {
 /** POST /send refusals (DAEMON_API.md), worded for the user. */
 const BAD_REQUEST_LABELS: Record<string, string> = {
   images_not_supported: "이 PC 프로그램은 이미지를 보낼 수 없습니다. 앱을 새 버전으로 업데이트해 주세요.",
+  files_not_supported: "이 PC 프로그램은 파일을 보낼 수 없습니다(지금은 Windows PC 프로그램만 지원).",
+  "file too large or empty": "파일이 너무 크거나 비어 있습니다 (20MB까지).",
+  "file name not allowed": "보낼 수 없는 파일 이름이나 형식입니다(실행 파일 등).",
+  "at most 5 attachments": "사진·파일은 합쳐서 5개까지 보낼 수 있습니다.",
   "unsupported image type": "PC 프로그램이 보낼 수 없는 이미지 형식입니다. PNG·JPG·GIF 로 바꿔 주세요.",
   "not a valid image": "이미지 파일이 손상되었거나 열 수 없습니다.",
   "image too large or empty": "이미지가 너무 크거나 비어 있습니다 (장당 10MB까지).",

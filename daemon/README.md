@@ -180,6 +180,8 @@ dotnet build -c Debug -o bin/SendTest
 7. 채팅창을 닫을 때 다른 창(업로드 중 "닫으면 안 보내짐" 확인 등)이 뜨면 **그 창은 건드리지 않고 채팅창을 열어 둡니다.** 잘못 답하면 이미지가 빠질 수 있어서입니다.
 8. 끝나면 클립보드를 되돌립니다(그사이 사용자가 다른 걸 복사했으면 건드리지 않음). 문구나 이미지가 일부 나간 뒤 오류가 나면 `partial_sent`.
 
+**파일 발송 (0.1.6, 실제 PC 확인 전)**: `/send` 의 `files`(이미지가 아닌 첨부)는 작업마다 `%LOCALAPPDATA%\NineTalkDaemon\files-…\<번호>\<원래 이름>` 에 써 두고(받는 사람에게 원래 이름이 보이게), 이미지 다음에 한 개씩 클립보드에 탐색기 "복사"와 같은 형태(파일 목록 + 복사 효과)로 올려 입력창에만 Ctrl+V → 뜨는 창의 전송(이미지와 같은 버튼 찾기) → 크기만큼 업로드 대기(최대 2분). 창이 안 뜨면 카카오톡이 바로 보냈을 수도 있어 `unknown_result`(입력창에 파일 이름이 글자로 들어갔으면 지우고 `send_failed`). 파일 폴더는 작업이 끝나고 5분 뒤, 또는 다음 작업 시작 때 지웁니다. 시험: `--send-test "이름" "문구" --file C:\temp\a.pdf`(dry-run).
+
 GDI+ 로 열리는 형식만(PNG·JPG·GIF·BMP) 받습니다. WebP·HEIC 는 `400 unsupported image type`(웹이 "Windows 는 PNG·JPG·GIF 만" 이라고 안내). GIF 는 첫 장면만 보내질 수 있습니다.
 
 앱에서 보낸 발송은 작업마다 `%LOCALAPPDATA%\NineTalkDaemon\last-send.log` 에 남습니다(친구 이름·문구 없이 받는 사람 번호와 단계만, 다음 작업 때 덮어씀).
