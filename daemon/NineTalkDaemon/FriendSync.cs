@@ -83,6 +83,8 @@ sealed class FriendSync
             }, cts.Token, Write);
             lock (gate) summary = done;
             Write($"친구 {count}명 읽음");
+            if (done.Unreadable > 0 || done.Expected is int shown && done.Read + done.Unreadable < shown)
+                ErrorLog.Add("친구 불러오기", $"읽은 친구 {done.Read}명, 카카오톡 표시 {done.Expected?.ToString() ?? "?"}명, 못 읽은 행 {done.Unreadable}개 (자세한 것은 last-sync.log)");
         }
         catch (OperationCanceledException)
         {
@@ -92,6 +94,7 @@ sealed class FriendSync
         {
             lock (gate) lastError = ex.Message;
             Write("오류: " + ex.Message);
+            ErrorLog.Add("친구 불러오기", $"{count}명 읽고 멈춤: {ex.Message}");
         }
         finally
         {

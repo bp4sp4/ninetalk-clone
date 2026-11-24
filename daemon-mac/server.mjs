@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 // NINETALK_MAC_PORT is only for testing next to another daemon; the dashboard always calls 47301.
 const PORT = Number(process.env.NINETALK_MAC_PORT) || 47301;
-const VERSION = "0.1.7-mac";
+const VERSION = "0.1.8-mac";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.KAKAO_MAC_BIN || path.join(HERE, "build", "kakao-mac");
 const DRY_RUN = process.env.NINETALK_MAC_DRY_RUN === "1";

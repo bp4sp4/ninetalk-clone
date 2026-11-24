@@ -31,6 +31,26 @@ function log(...args) {
   console.log("[ninetalk]", ...args);
 }
 
+// On Windows the app's own problems go to the PC program's errors.log too ([앱]), so one file covers everything.
+const ERROR_LOG = process.platform === "win32" && process.env.LOCALAPPDATA
+  ? path.join(process.env.LOCALAPPDATA, "NineTalkDaemon", "errors.log")
+  : null;
+function logError(...args) {
+  log(...args);
+  if (!ERROR_LOG) return;
+  try {
+    fs.mkdirSync(path.dirname(ERROR_LOG), { recursive: true });
+    const stamp = new Date().toLocaleString("sv-SE"); // 2026-11-24 17:30:00
+    fs.appendFileSync(ERROR_LOG, `${stamp} [앱] ${args.map(String).join(" ")}\r\n`);
+  } catch {
+    // the log must never break the app
+  }
+}
+process.on("uncaughtException", (error) => {
+  logError("app error:", error?.stack ?? error);
+  if (app.isReady()) dialog.showErrorBox("한평생톡", `예상하지 못한 오류가 났습니다.\n\n${error?.message ?? error}`);
+});
+
 /**
  * Environment for child processes. NODE_OPTIONS (e.g. --inspect, --require) from the user's PC would
  * change how the bundled server starts, so it is not passed on.
@@ -119,6 +139,7 @@ function startWebServer() {
     exited = true;
     log("web server exited", code);
     if (!quitting) {
+      logError("web server stopped unexpectedly, code", code);
       dialog.showErrorBox("한평생톡", `내부 서버가 종료되었습니다 (코드 ${code}). 앱을 다시 실행해 주세요.`);
       // Nothing can record send results without the server; the PC program keeps its last results for next time.
       allowQuit = true;
@@ -158,7 +179,7 @@ async function startDaemon() {
     if (shuttingDown === null) {
       // No answer: it may have just exited. Look at the port again instead of assuming it is still there.
       if (Date.now() > waitUntil) {
-        log("the PC program on the port does not answer; not starting another one (restart the app later)");
+        logError("the PC program on the port does not answer; not starting another one (restart the app later)");
         return;
       }
       await sleep(300);
@@ -169,7 +190,7 @@ async function startDaemon() {
     if (!waited) log("the previous PC program is still finishing its last recipient; waiting for it to exit");
     waited = true;
     if (Date.now() > waitUntil) {
-      log("the previous PC program did not exit in time; not starting another one (restart the app later)");
+      logError("the previous PC program did not exit in time; not starting another one (restart the app later)");
       return;
     }
     await sleep(1000);
@@ -183,7 +204,7 @@ async function startDaemon() {
     return;
   }
   if (found === "other") {
-    log(`${DAEMON_URL} is held by another program; not starting the PC program`);
+    logError(`${DAEMON_URL} is held by another program; not starting the PC program`);
     dialog.showErrorBox(
       "한평생톡",
       "PC 프로그램 포트(47301)를 다른 프로그램이 쓰고 있어 PC 프로그램을 시작하지 못했습니다.\n친구 불러오기와 발송은 쓸 수 없습니다.",
@@ -194,18 +215,21 @@ async function startDaemon() {
 
   if (process.platform === "win32") {
     if (!fs.existsSync(DAEMON_EXE)) {
-      log("PC program not found:", DAEMON_EXE);
+      logError("PC program not found:", DAEMON_EXE);
       return;
     }
     // --parent-pid: the daemon exits by itself if this app dies without stopping it (crash, Task Manager).
     const child = spawn(DAEMON_EXE, ["--parent-pid", String(process.pid)], { env, stdio: "ignore", windowsHide: true });
     let exited = false;
     const onExit = (cb) => (exited ? cb() : child.once("exit", cb));
-    child.once("exit", () => (exited = true));
+    child.once("exit", (code) => {
+      exited = true;
+      if (!quitting) logError("PC program exited while the app was running, code", code);
+    });
     child.on("error", (e) => {
       // A failed spawn may never emit "exit"; do not wait for it on quit.
       exited = true;
-      log("PC program failed to start:", e.message);
+      logError("PC program failed to start:", e.message);
     });
     children.push({
       name: "PC program",
@@ -318,6 +342,7 @@ function createWindow() {
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
     if (!isMainFrame || errorCode === -3 /* ERR_ABORTED: a navigation replaced this one */ || quitting) return;
     if (retries++ >= 5) {
+      logError("the window could not load", url, errorCode);
       dialog.showErrorBox("한평생톡", "화면을 불러오지 못했습니다. 앱을 다시 실행해 주세요.");
       return;
     }
@@ -454,6 +479,7 @@ async function main() {
     return;
   }
   if (await portInUse(PORT)) {
+    logError(`port ${PORT} is in use; the app cannot start`);
     dialog.showErrorBox("한평생톡", `${PORT} 포트를 다른 프로그램이 쓰고 있어 시작할 수 없습니다.`);
     app.quit();
     return;
@@ -462,9 +488,10 @@ async function main() {
   startWebServer();
   // Not awaited: it can wait minutes for a previous PC program to finish, and the window must not stay
   // hidden that long. The dashboard shows the PC program's state as it comes up.
-  startDaemon().catch((error) => log("starting the PC program failed:", error?.message ?? error));
+  startDaemon().catch((error) => logError("starting the PC program failed:", error?.message ?? error));
 
   if (!(await waitForServer(`${APP_ORIGIN}/dashboard`, 30000))) {
+    logError("the web server did not start within 30 s");
     dialog.showErrorBox("한평생톡", "내부 서버가 30초 안에 시작되지 않았습니다.");
     app.quit();
     return;

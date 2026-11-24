@@ -54,6 +54,17 @@ static class Program
             return;
         }
 
+        // Crashes go to errors.log too (one file for every problem).
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => ErrorLog.Add("PC 프로그램", "멈춤: " + e.ExceptionObject);
+        Application.ThreadException += (_, e) =>
+        {
+            ErrorLog.Add("PC 프로그램", "오류: " + e.Exception);
+            MessageBox.Show("예상하지 못한 오류가 났습니다. 기록: " + ErrorLog.LogPath + "\n\n" + e.Exception.Message, "한평생톡",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) => ErrorLog.Add("PC 프로그램", "오류: " + e.Exception.GetBaseException().Message);
+        ErrorLog.Add("PC 프로그램", $"시작 (버전 {HttpServer.Version})");
+
         // --parent-pid <pid>: started by the desktop app (desktop/main.js); exit when it exits.
         var parentIndex = Array.IndexOf(args, "--parent-pid");
         int? parentPid = parentIndex >= 0 && parentIndex + 1 < args.Length && int.TryParse(args[parentIndex + 1], out var pid) ? pid : null;

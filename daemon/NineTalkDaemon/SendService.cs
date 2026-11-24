@@ -129,6 +129,10 @@ sealed class SendService
         void Write(string msg)
         {
             try { lock (gate) file?.WriteLine($"{DateTime.Now:HH:mm:ss} {msg}"); } catch { }
+            // The job's start and end give the problems their context in errors.log.
+            // OCR'd button text stays out of errors.log (it is read off the screen, so it could hold anything).
+            if (!msg.Contains("버튼 주변 글자") && (ErrorLog.LooksLikeProblem(msg) || msg.StartsWith("발송 시작") || msg.StartsWith("발송 끝")))
+                ErrorLog.Add("발송", msg);
             Log?.Invoke(msg);
         }
         bool wasShown = kakao.MainShown, wasIconic = Native.IsIconic(kakao.Main);
