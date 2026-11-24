@@ -49,7 +49,7 @@ static class KakaoSender
             Native.SetText(kakao.FriendSearchEdit, name);
             await Task.Delay(700, ct);
             int rows = await CountSearchRowsAsync(kakao, s, ct);
-            log($"  '{name}' 검색 결과 {rows}명");
+            log($"  검색 결과 {rows}명");
             if (rows == 0) return "not_found";
             if (rows > 1) return "duplicate_name";
 
@@ -73,11 +73,11 @@ static class KakaoSender
             {
                 // 3. Exact title check.
                 var title = Native.WindowText(chat);
-                log($"  채팅창 0x{chat:X} {Native.ClassName(chat)} '{title}' (새로 열림: {openedByUs}), 자식: "
+                log($"  채팅창 0x{chat:X} {Native.ClassName(chat)} (새로 열림: {openedByUs}), 자식: "
                     + string.Join(", ", Native.ChildWindows(chat).Select(h => Native.ClassName(h)).Distinct()));
                 if (title != name)
                 {
-                    log($"  채팅방 제목 '{title}' ≠ '{name}'");
+                    log($"  채팅방 제목이 이름과 다름 (제목 {title.Length}자, 이름 {name.Length}자)");
                     return "room_mismatch";
                 }
 
@@ -256,7 +256,7 @@ static class KakaoSender
             foreach (var h in leftovers)
             {
                 var r = Native.WindowRect(h);
-                log($"  붙여넣은 뒤 뜬 창 0x{h:X} {Native.ClassName(h)} '{Native.WindowText(h)}' {r.Width}x{r.Height}, 소유 창 0x{Native.GetWindow(h, Native.GW_OWNER):X} → 닫음");
+                log($"  붙여넣은 뒤 뜬 창 0x{h:X} {Native.ClassName(h)} 제목 {Native.WindowText(h).Length}자 {r.Width}x{r.Height}, 소유 창 0x{Native.GetWindow(h, Native.GW_OWNER):X} → 닫음");
                 Native.PostMessage(h, Native.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
             }
             bool leftOpen = leftovers.Count > 0
@@ -267,7 +267,7 @@ static class KakaoSender
             return leftOpen ? ("붙여넣은 뒤 뜬 창이 닫히지 않음", true) : ("이미지 전송 창이 뜨지 않음", false);
         }
         var rect = Native.WindowRect(window);
-        log($"  이미지 창 0x{window:X} {Native.ClassName(window)} '{Native.WindowText(window)}' {rect.Width}x{rect.Height}");
+        log($"  이미지 창 0x{window:X} {Native.ClassName(window)} 제목 {Native.WindowText(window).Length}자 {rect.Width}x{rect.Height}, 소유 창 0x{Native.GetWindow(window, Native.GW_OWNER):X}");
 
         if (dryRun)
         {
@@ -321,7 +321,7 @@ static class KakaoSender
             if (await WaitForAsync(3000, () => Native.IsWindow(chat) && Native.IsWindowVisible(chat) ? null : (bool?)true) is not null) return;
             if (KakaoWindows(kakao).FirstOrDefault(h => !before.Contains(h) && h != chat) is var question && question != IntPtr.Zero)
             {
-                log($"  채팅창을 닫으려 하자 창이 뜸 0x{question:X} {Native.ClassName(question)} '{Native.WindowText(question)}' → 건드리지 않고 채팅창을 열어 둠");
+                log($"  채팅창을 닫으려 하자 창이 뜸 0x{question:X} {Native.ClassName(question)} 제목 {Native.WindowText(question).Length}자 → 건드리지 않고 채팅창을 열어 둠");
                 return;
             }
             await Task.Delay(3000, CancellationToken.None);

@@ -182,6 +182,8 @@ dotnet build -c Debug -o bin/SendTest
 
 GDI+ 로 열리는 형식만(PNG·JPG·GIF·BMP) 받습니다. WebP·HEIC 는 `400 unsupported image type`(웹이 "Windows 는 PNG·JPG·GIF 만" 이라고 안내). GIF 는 첫 장면만 보내질 수 있습니다.
 
+앱에서 보낸 발송은 작업마다 `%LOCALAPPDATA%\NineTalkDaemon\last-send.log` 에 남습니다(친구 이름·문구 없이 받는 사람 번호와 단계만, 다음 작업 때 덮어씀).
+
 **Windows PC에서 먼저 확인할 것** (테스트 친구로, 로그 `%LOCALAPPDATA%\NineTalkDaemon\send-test.log`):
 
 ```bash

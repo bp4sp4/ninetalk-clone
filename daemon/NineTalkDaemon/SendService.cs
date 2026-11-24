@@ -38,6 +38,9 @@ sealed class SendService
 
     public event Action<string>? Log;
 
+    public static readonly string LogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NineTalkDaemon", "last-send.log");
+
     /// <summary>Set by the tray: true while a friend read is running, so the two never share the window.</summary>
     public Func<bool>? OtherBusy { get; set; }
 
@@ -86,11 +89,25 @@ sealed class SendService
     async Task Run(KakaoWindow kakao, List<Recipient> recipients, Settings settings, Attachments attachments, bool dryRun, CancellationTokenSource cts)
     {
         var ct = cts.Token;
+        // Per-job log (overwritten each job), without names or message text, for finding out where a send
+        // went wrong: %LOCALAPPDATA%\NineTalkDaemon\last-send.log
+        StreamWriter? file = null;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+            file = new StreamWriter(LogPath, append: false) { AutoFlush = true };
+        }
+        catch { /* no log file: the send still runs */ }
+        void Write(string msg)
+        {
+            try { lock (gate) file?.WriteLine($"{DateTime.Now:HH:mm:ss} {msg}"); } catch { }
+            Log?.Invoke(msg);
+        }
         bool wasShown = kakao.MainShown, wasIconic = Native.IsIconic(kakao.Main);
         bool wasChatTab = kakao.ChatTabSelected;
         var s = Native.GetDpiForWindow(kakao.Main) / 96.0;
         string finalState = "done";
-        Log?.Invoke($"발송 시작: {recipients.Count}명, {settings.IntervalMs}ms 간격"
+        Write($"발송 시작: {recipients.Count}명, {settings.IntervalMs}ms 간격"
             + (settings.Restart && settings.SplitCount is int every ? $", {every}명마다 카카오톡 재시작" : "")
             + (attachments.Images.Count > 0 ? $", 이미지 {attachments.Images.Count}장{(attachments.ImageFirst ? " 먼저" : "")}" : "")
             + (dryRun ? " (dry-run)" : ""));
@@ -114,11 +131,11 @@ sealed class SendService
                     try
                     {
                         error = await KakaoSender.SendOneAsync(kakao, r.Name, string.IsNullOrWhiteSpace(r.Text) ? "" : r.Text, attachments.Images,
-                            attachments.ImageFirst, dryRun, m => Log?.Invoke(m), CancellationToken.None);
+                            attachments.ImageFirst, dryRun, m => Write(m), CancellationToken.None);
                     }
-                    catch (Exception ex) { Log?.Invoke($"  {r.Name}: {ex.Message}"); error = "send_failed"; }
+                    catch (Exception ex) { Write($"  #{r.Id}: {ex.Message}"); error = "send_failed"; }
                 }
-                Log?.Invoke($"{i + 1}/{recipients.Count} {r.Name}: {error ?? (dryRun ? "dry-run ok" : "sent")}");
+                Write($"{i + 1}/{recipients.Count} #{r.Id}: {error ?? (dryRun ? "dry-run ok" : "sent")}");
                 lock (gate)
                 {
                     results.Add(new Result(r.Id, error is null ? "sent" : "failed", error));
@@ -132,7 +149,7 @@ sealed class SendService
 
                 if (settings.Restart && settings.SplitCount is int n && (i + 1) % n == 0)
                 {
-                    var restarted = await KakaoRestart.RestartAsync(m => Log?.Invoke(m));
+                    var restarted = await KakaoRestart.RestartAsync(m => Write(m));
                     if (restarted is null) { finalState = "failed"; break; } // the rest goes back to the queue
                     kakao = restarted;
                     // KakaoTalk may come back hidden in the tray; captures need the window shown.
@@ -147,7 +164,7 @@ sealed class SendService
         catch (OperationCanceledException) { finalState = "stopped"; }
         catch (Exception ex)
         {
-            Log?.Invoke("발송 오류: " + ex.Message);
+            Write("발송 오류: " + ex.Message);
             finalState = "failed";
         }
         finally
@@ -169,8 +186,9 @@ sealed class SendService
             }
             catch { /* restoring is best effort */ }
             lock (gate) { state = finalState; running = null; }
-            Log?.Invoke($"발송 끝: {finalState}");
+            Write($"발송 끝: {finalState}");
             cts.Dispose();
+            file?.Dispose();
         }
     }
 }
