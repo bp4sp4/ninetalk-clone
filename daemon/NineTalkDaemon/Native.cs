@@ -62,10 +62,25 @@ static class Native
     /// Replaces an edit control's text the way a paste does (EM_REPLACESEL), so the owner gets its change
     /// notification. KakaoTalk's chat input shows WM_SETTEXT text but keeps "전송" disabled.
     /// </summary>
-    public static void ReplaceText(IntPtr hwnd, string text)
+    public static void ReplaceText(IntPtr hwnd, string text, bool undoable = true)
     {
         SendMessage(hwnd, EM_SETSEL, IntPtr.Zero, (IntPtr)(-1));
-        SendMessage(hwnd, EM_REPLACESEL, (IntPtr)1, text);
+        SendMessage(hwnd, EM_REPLACESEL, (IntPtr)(undoable ? 1 : 0), text);
+    }
+
+    /// <summary>Empties an edit control the way a user would, without an undo step that could bring our text back.</summary>
+    public static void ClearText(IntPtr hwnd) => ReplaceText(hwnd, "", undoable: false);
+
+    public const uint WM_GETTEXT = 0x000D;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+    static extern IntPtr SendMessageText(IntPtr hwnd, uint msg, IntPtr wParam, StringBuilder lParam);
+
+    public static string GetText(IntPtr hwnd)
+    {
+        // The length can be stale (that is why this is read), so the buffer does not trust it.
+        var sb = new StringBuilder(Math.Max(4096, TextLength(hwnd) + 1));
+        SendMessageText(hwnd, WM_GETTEXT, (IntPtr)sb.Capacity, sb);
+        return sb.ToString();
     }
 
     public static int TextLength(IntPtr hwnd) => (int)SendMessage(hwnd, WM_GETTEXTLENGTH, IntPtr.Zero, IntPtr.Zero);
