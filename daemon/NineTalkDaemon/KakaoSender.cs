@@ -358,15 +358,33 @@ static class KakaoSender
     }
 
     /// <summary>
-    /// The yellow "전송" button of the image-send window, as a point in its client coordinates. Searched in the
-    /// lower part of the window only, and the yellow area must be mostly filled (a solid button), so yellow in
-    /// the image preview is not taken for it.
+    /// The "전송" button of the image-send window, as a point in its client coordinates.
+    ///
+    /// KakaoTalk 26.8 on Windows ("클립보드 이미지 전송", seen 2026-11-24): a white bar along the bottom under a
+    /// thin grey line, with the dark label "전송" in its middle. The line is looked for upwards from the bottom
+    /// (the caption box's underline sits higher, above the preview's bottom edge), then the label's dark
+    /// pixels between that line and the bottom; their middle is clicked. A label that is not roughly
+    /// centred, or not the size of two characters, is not taken.
+    /// A solid yellow button (other versions, like the chat's own 전송) is accepted too.
     /// </summary>
     static Point? FindSheetSendButton(IntPtr sheet)
     {
         using var img = Capture.Window(sheet);
         if (img is null) return null;
         var s = Native.GetDpiForWindow(sheet) / 96.0;
+        var found = YellowButton(img, s) ?? LabelUnderLine(img, s);
+        if (found is not Point at) return null;
+        var rect = Native.WindowRect(sheet);
+        var pt = new Native.POINT { X = rect.Left + at.X, Y = rect.Top + at.Y };
+        Native.ScreenToClient(sheet, ref pt);
+        return new Point(pt.X, pt.Y);
+    }
+
+    static int Luminance(Color c) => (c.R * 299 + c.G * 587 + c.B * 114) / 1000;
+
+    /// <summary>A mostly filled KakaoTalk-yellow area in the lower part (yellow in the preview is scattered).</summary>
+    static Point? YellowButton(Bitmap img, double s)
+    {
         int from = Math.Max(0, img.Height - (int)(90 * s));
         int left = int.MaxValue, right = -1, top = int.MaxValue, bottom = -1, count = 0;
         for (int y = from; y < img.Height; y++)
@@ -379,11 +397,46 @@ static class KakaoSender
                 top = Math.Min(top, y); bottom = Math.Max(bottom, y);
             }
         if (right < 0 || right - left < 30 * s || bottom - top < 15 * s) return null;
-        if (count < (right - left + 1) * (bottom - top + 1) * 0.6) return null; // scattered yellow, not a button
-        var rect = Native.WindowRect(sheet);
-        var pt = new Native.POINT { X = rect.Left + (left + right) / 2, Y = rect.Top + (top + bottom) / 2 };
-        Native.ScreenToClient(sheet, ref pt);
-        return new Point(pt.X, pt.Y);
+        if (count < (right - left + 1) * (bottom - top + 1) * 0.6) return null;
+        return new Point((left + right) / 2, (top + bottom) / 2);
+    }
+
+    /// <summary>The dark label in the white bar under the lowest full-width grey line (see FindSheetSendButton).</summary>
+    static Point? LabelUnderLine(Bitmap img, double s)
+    {
+        int w = img.Width, h = img.Height;
+        if (w < 100 || h < 100) return null;
+        int? line = null;
+        for (int y = h - (int)(25 * s); y > h - (int)(120 * s) && y > 0; y--)
+        {
+            int grey = 0, n = 0;
+            for (int x = w / 10; x < w * 9 / 10; x += 2, n++)
+            {
+                int lum = Luminance(img.GetPixel(x, y));
+                if (lum >= 190 && lum <= 248) grey++;
+            }
+            if (grey >= n * 0.9) { line = y; break; }
+        }
+        if (line is not int lineY) return null;
+
+        int left = int.MaxValue, right = -1, top = int.MaxValue, bottom = -1;
+        for (int y = lineY + (int)(3 * s); y < h - (int)(4 * s); y++)
+        {
+            int dark = 0;
+            for (int x = w / 4; x < w * 3 / 4; x++)
+            {
+                if (Luminance(img.GetPixel(x, y)) >= 140) continue;
+                dark++;
+                left = Math.Min(left, x); right = Math.Max(right, x);
+                top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+            }
+            if (dark > w / 4) return null; // a dark band (window edge or shadow), not a label
+        }
+        if (right < 0) return null;
+        int labelWidth = right - left + 1, labelHeight = bottom - top + 1, middle = (left + right) / 2;
+        if (labelWidth < 12 * s || labelWidth > 80 * s || labelHeight < 6 * s || labelHeight > 30 * s) return null;
+        if (Math.Abs(middle - w / 2) > w / 5) return null;
+        return new Point(middle, (top + bottom) / 2);
     }
 
     /// <summary>Visible KakaoTalk top-level windows other than the main window (chats, popups).</summary>
