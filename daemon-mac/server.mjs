@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 // NINETALK_MAC_PORT is only for testing next to another daemon; the dashboard always calls 47301.
 const PORT = Number(process.env.NINETALK_MAC_PORT) || 47301;
-const VERSION = "0.1.8-mac";
+const VERSION = "0.1.10-mac";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BIN = process.env.KAKAO_MAC_BIN || path.join(HERE, "build", "kakao-mac");
 const DRY_RUN = process.env.NINETALK_MAC_DRY_RUN === "1";
@@ -27,6 +27,11 @@ const MAX_SAME_FAILURES = 3;
 const MAX_IMAGES = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const IMAGE_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/heic": "heic" };
+// Files (PDF, 한글, 엑셀, zip ...): images and files together at most 5, each file up to 20MB (DAEMON_API.md).
+const MAX_ATTACHMENTS = 5;
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+// Programs and scripts are never sent (the dashboard and the Windows daemon refuse them too).
+const BLOCKED_EXT = new Set([".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".dll", ".lnk", ".app", ".pkg", ".dmg", ".sh", ".command"]); // = web/lib/attachments.ts
 // The last send job survives a restart, so the dashboard can still record who already got the message.
 const STATE_DIR = process.env.NINETALK_MAC_STATE_DIR || path.join(os.homedir(), "Library", "Application Support", "NineTalkMacDaemon");
 const JOB_FILE = path.join(STATE_DIR, "last-send.json");
@@ -163,10 +168,11 @@ async function runSync(keyword) {
 // --- sending ------------------------------------------------------------------------------------
 
 let job = { job_id: null, state: "done", results: [], stopRequested: false, wake: null };
-// The recipient kakao-mac is working on (no result recorded yet) and the job's image folder, so an immediate
-// exit can still record that person and remove the images.
+// The recipient kakao-mac is working on (no result recorded yet) and the job's image / file folders, so an
+// immediate exit can still record that person and remove them.
 let inFlight = null; // { id } | null
 let jobImageDir = null;
+let jobFileDir = null;
 
 function saveJob() {
   try {
@@ -216,11 +222,24 @@ function looksLikeImage(data, ext) {
   }
 }
 
-/** Image folders left by a run that was killed (they can hold customer images). */
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/** Image and file folders left by a run that was killed (they can hold customer images and files). */
 function removeLeftoverImages() {
   try {
     for (const name of readdirSync(STATE_DIR)) {
-      if (name.startsWith("images-")) rmSync(path.join(STATE_DIR, name), { recursive: true, force: true });
+      if (!name.startsWith("images-") && !name.startsWith("files-")) continue;
+      // Not while the program that wrote it still runs (a second server.mjs started by hand).
+      if (processAlive(Number(name.split("-")[1]))) continue;
+      rmSync(path.join(STATE_DIR, name), { recursive: true, force: true });
     }
   } catch {
     // no state folder yet
@@ -252,17 +271,67 @@ function writeImages(images) {
   return { dir, paths };
 }
 
-async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode, imageFiles, image_first }) {
+/**
+ * The name the recipient sees, kept as a plain file name: no folders, no characters macOS or KakaoTalk trips on,
+ * no program types. Null when nothing usable is left.
+ */
+function safeFileName(raw) {
+  let name = String(raw ?? "").normalize("NFC").split(/[\\/]/).pop();
+  name = name.replace(/[\u0000-\u001f\u007f:*?"<>|]/g, "_").trim().replace(/^\.+/, "").replace(/[. ]+$/, "");
+  // macOS allows 255 bytes per name, and a Korean letter is 3: keep well under it.
+  if (!name || Buffer.byteLength(name, "utf8") > 200) return null;
+  if (BLOCKED_EXT.has(path.extname(name).toLowerCase())) return null;
+  return name;
+}
+
+/**
+ * Writes the job's files for kakao-mac (it pastes each one into the chat), each in a folder of its own so the
+ * recipient sees the original name. Throws BadRequest for a bad name or size.
+ */
+function writeFiles(files) {
+  if (!Array.isArray(files) || files.length === 0) return { dir: null, paths: [] };
+  if (files.length > MAX_ATTACHMENTS) throw new BadRequest(`at most ${MAX_ATTACHMENTS} attachments`);
+  const decoded = files.map((file) => {
+    const name = safeFileName(file?.name);
+    if (!name) throw new BadRequest("file name not allowed");
+    const data = Buffer.from(String(file?.data_base64 ?? ""), "base64");
+    if (data.length === 0 || data.length > MAX_FILE_BYTES) throw new BadRequest("file too large or empty");
+    return { name, data };
+  });
+  const dir = path.join(STATE_DIR, `files-${process.pid}-${Date.now()}`);
+  try {
+    const paths = decoded.map(({ name, data }, i) => {
+      const folder = path.join(dir, String(i + 1));
+      mkdirSync(folder, { recursive: true });
+      const file = path.join(folder, name);
+      writeFileSync(file, data);
+      return file;
+    });
+    return { dir, paths };
+  } catch (error) {
+    // Disk full and the like: remove what was written (customers' files), and keep the path (a file name) out
+    // of the answer and the log.
+    rmSync(dir, { recursive: true, force: true });
+    log("could not write the job's files:", error.code ?? "error");
+    throw new Error("could not write files");
+  }
+}
+
+async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode, imageFiles, attachedFiles, image_first }) {
   busy = "SendMessage";
   job = { job_id: job_id ?? null, state: "running", results: [], stopRequested: false, wake: null };
   saveJob();
   const imagePaths = imageFiles?.paths ?? [];
+  const filePaths = attachedFiles?.paths ?? [];
   jobImageDir = imageFiles?.dir ?? null;
-  // Above kakao-mac's own worst case (open the chat ~20 s, each image up to ~65 s with a 45 s upload wait,
-  // closing up to ~40 s), so a slow upload is not cut off and then wrongly recorded.
-  const perRecipientTimeout = 120000 + imagePaths.length * 75000;
+  jobFileDir = attachedFiles?.dir ?? null;
+  // Above kakao-mac's own worst case (open the chat ~20 s, each image up to ~65 s with a 45 s upload wait, each
+  // file up to ~110 s with a 90 s upload wait, closing up to ~40 s), so a slow upload is not cut off and then
+  // wrongly recorded.
+  const perRecipientTimeout = 120000 + imagePaths.length * 75000 + filePaths.length * 120000;
   const intervalMs = intervalFor(interval_ms, speed_rate);
-  log(`발송 시작: ${recipients.length}명, ${intervalMs}ms 간격${imagePaths.length ? `, 이미지 ${imagePaths.length}장${image_first ? " 먼저" : ""}` : ""}${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
+  const attached = [imagePaths.length ? `이미지 ${imagePaths.length}장` : "", filePaths.length ? `파일 ${filePaths.length}개` : ""].filter(Boolean).join(", ");
+  log(`발송 시작: ${recipients.length}명, ${intervalMs}ms 간격${attached ? `, ${attached}${image_first ? " 먼저" : ""}` : ""}${DRY_RUN ? " (dry-run, 실제로 보내지 않음)" : ""}`);
   if (send_mode === "restart") log("맥에서는 카카오톡 재시작을 아직 하지 않습니다. 재시작 없이 계속 보냅니다.");
   let finalState = "done";
   let lastCause = null;
@@ -275,7 +344,8 @@ async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode,
       }
       const args = ["send", String(recipient.name).trim(), String(recipient.text ?? "")];
       for (const file of imagePaths) args.push("--image", file);
-      if (imagePaths.length && image_first) args.push("--image-first");
+      for (const file of filePaths) args.push("--file", file);
+      if ((imagePaths.length || filePaths.length) && image_first) args.push("--image-first");
       if (!DRY_RUN) args.push("--send");
       let out;
       inFlight = { id: recipient.id };
@@ -327,7 +397,9 @@ async function runSend({ job_id, recipients, speed_rate, interval_ms, send_mode,
     job.wake = null;
     saveJob();
     if (imageFiles?.dir) rmSync(imageFiles.dir, { recursive: true, force: true });
+    if (attachedFiles?.dir) rmSync(attachedFiles.dir, { recursive: true, force: true });
     jobImageDir = null;
+    jobFileDir = null;
     busy = null;
     log(`발송 끝: ${finalState}`);
   }
@@ -396,6 +468,7 @@ const server = createServer(async (req, res) => {
         status,
         version: VERSION_LABEL,
         images: true, // this PC program can send images
+        files: true, // and other files (PDF, 한글, 엑셀 ...)
         // Separate from status (which stays "SendMessage" while a last recipient finishes), so a newly started
         // desktop app can wait for this process to exit instead of adopting it.
         shutting_down: shuttingDown || undefined,
@@ -436,10 +509,10 @@ const server = createServer(async (req, res) => {
       if (recipients.length === 0 || recipients.some((r) => !String(r?.name ?? "").trim())) {
         return send(res, origin, 400, { ok: false, error: "recipients required" });
       }
-      // Files (not images) are not sent from the Mac yet; refuse the job rather than send only part of it.
-      if (Array.isArray(body.files) && body.files.length > 0) return send(res, origin, 400, { ok: false, error: "files_not_supported" });
       const imageCount = Array.isArray(body.images) ? body.images.length : 0;
-      if (recipients.some((r) => !String(r?.text ?? "").trim()) && imageCount === 0) {
+      const fileCount = Array.isArray(body.files) ? body.files.length : 0;
+      if (imageCount + fileCount > MAX_ATTACHMENTS) return send(res, origin, 400, { ok: false, error: `at most ${MAX_ATTACHMENTS} attachments` });
+      if (recipients.some((r) => !String(r?.text ?? "").trim()) && imageCount + fileCount === 0) {
         return send(res, origin, 400, { ok: false, error: "text or images required" });
       }
       if (shuttingDown) return send(res, origin, 409, { ok: false, status: "ShuttingDown" });
@@ -447,7 +520,14 @@ const server = createServer(async (req, res) => {
       // Checked again after the await: another request may have started a job meanwhile.
       if (status !== "Ready" || busy || shuttingDown) return send(res, origin, 409, { ok: false, status: busy ?? (shuttingDown ? "ShuttingDown" : status) });
       const imageFiles = writeImages(body.images); // throws BadRequest (400) for anything that is not a small image
-      runSend({ ...body, recipients, imageFiles });
+      let attachedFiles;
+      try {
+        attachedFiles = writeFiles(body.files); // throws BadRequest (400) for a bad name or size
+      } catch (error) {
+        if (imageFiles.dir) rmSync(imageFiles.dir, { recursive: true, force: true });
+        throw error;
+      }
+      runSend({ ...body, recipients, imageFiles, attachedFiles });
       return send(res, origin, 202, { ok: true });
     }
     if (req.method === "GET" && pathname === "/send/result") {
@@ -519,6 +599,7 @@ function exitNow(reason) {
     // already gone
   }
   if (jobImageDir) rmSync(jobImageDir, { recursive: true, force: true });
+  if (jobFileDir) rmSync(jobFileDir, { recursive: true, force: true });
   process.exit(1);
 }
 

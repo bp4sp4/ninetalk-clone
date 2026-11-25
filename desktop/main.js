@@ -164,8 +164,9 @@ async function requestDaemonShutdown() {
   }
 }
 
-// Longest a PC program can need to finish its last recipient (5 images with slow uploads, then closing the chat).
-const LAST_RECIPIENT_MS = 10 * 60 * 1000;
+// Longest a PC program can need to finish its last recipient (5 files with slow uploads, then closing the chat:
+// the Mac program allows 2 min + 2 min a file, ../daemon-mac/server.mjs).
+const LAST_RECIPIENT_MS = 13 * 60 * 1000;
 
 async function startDaemon() {
   let found = await probeDaemon();

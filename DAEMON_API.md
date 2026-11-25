@@ -34,7 +34,7 @@
 | `ShuttingDown` | PC 프로그램이 종료하는 중. 새 작업은 409 `{ "status": "ShuttingDown" }` |
 
 - `images` (선택, `bool`): 이 PC 프로그램이 이미지 발송을 지원하면 `true`(맥, Windows 둘 다. Windows 는 PNG·JPG·GIF·BMP 를 사진으로, WebP·HEIC 는 파일로 보냄). 웹은 이 값이 `true` 일 때만 이미지가 있는 요청의 발송 버튼을 엽니다. 지원하지 않는 PC 프로그램은 이미지가 있는 `/send` 를 `400 images_not_supported` 로 거절합니다.
-- `files` (선택, `bool`): 이미지가 아닌 파일(PDF·한글·엑셀·zip 등) 발송을 지원하면 `true`(Windows 0.1.6 부터, 맥은 아직). 웹은 파일이 있는 요청은 이 값이 `true` 일 때만 보냅니다. 지원하지 않는 PC 프로그램은 `400 files_not_supported`.
+- `files` (선택, `bool`): 이미지가 아닌 파일(PDF·한글·엑셀·zip 등) 발송을 지원하면 `true`(Windows 0.1.6 부터, 맥 0.1.10 부터). 웹은 파일이 있는 요청은 이 값이 `true` 일 때만 보냅니다. 지원하지 않는 PC 프로그램은 `400 files_not_supported`.
 
 ## POST /friends/synchronize
 
