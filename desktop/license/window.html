@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<!-- No network and no outside code: everything the window needs is in this file. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>한평생톡 사용 허가</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1c1c1e;
+    --muted: #6b6b70;
+    --line: #d9d9de;
+    --accent: #2f6fde;
+    --accent-fg: #ffffff;
+    --error: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e20;
+      --fg: #ececef;
+      --muted: #a0a0a8;
+      --line: #3a3a3f;
+      --accent: #5b8ff0;
+      --error: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 28px;
+    user-select: none;
+  }
+  main { width: 100%; max-width: 400px; }
+  h1 { font-size: 19px; margin: 0 0 8px; }
+  p { margin: 0 0 14px; }
+  #message { color: var(--muted); white-space: pre-line; }
+  #error { color: var(--error); }
+  #busy { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+  .spinner {
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  form { display: flex; gap: 8px; margin: 0 0 14px; }
+  input {
+    flex: 1; min-width: 0; padding: 8px 10px; font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit;
+    user-select: text;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    padding: 8px 14px; font: inherit; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: inherit;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions .quiet { margin-left: auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">한평생톡</h1>
+  <p id="message"></p>
+  <p id="busy" hidden><span class="spinner"></span><span id="busy-text"></span></p>
+  <form id="form" hidden>
+    <input id="token" aria-label="사용 허가 토큰" placeholder="hpt_…" autocomplete="off" spellcheck="false" autocapitalize="off">
+    <button id="submit" class="primary" type="submit">확인</button>
+  </form>
+  <p id="error" role="alert" hidden></p>
+  <div class="actions">
+    <button id="reenter" type="button" hidden>토큰 다시 넣기</button>
+    <button id="recheck" type="button" hidden>다시 확인</button>
+    <button id="quit" class="quiet" type="button">종료</button>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  // "토큰 다시 넣기" opens the input on a lock view that does not show it by itself.
+  let reentering = false;
+  let lastTitle = null;
+
+  function render(view) {
+    if (!view) return;
+    if (view.title !== lastTitle) reentering = false; // a different screen
+    lastTitle = view.title;
+    const busy = Boolean(view.busy);
+    const showInput = Boolean(view.showInput) || reentering;
+    $("title").textContent = view.title || "한평생톡";
+    $("message").textContent = view.message || "";
+    $("message").hidden = !view.message;
+    $("busy").hidden = !busy;
+    $("busy-text").textContent = view.busyText || "";
+    $("form").hidden = !showInput;
+    $("error").hidden = !view.error;
+    $("error").textContent = view.error || "";
+    $("reenter").hidden = showInput || !view.canReenter;
+    $("recheck").hidden = !view.canRecheck;
+    for (const el of document.querySelectorAll("input, button")) el.disabled = busy;
+    $("quit").disabled = Boolean(view.blockQuit);
+    $("quit").hidden = Boolean(view.blockQuit);
+    if (showInput && !busy && document.activeElement !== $("token")) $("token").focus();
+  }
+
+  $("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    render(await window.license.submit($("token").value));
+  });
+  $("reenter").addEventListener("click", async () => {
+    reentering = true;
+    render(await window.license.view());
+  });
+  $("recheck").addEventListener("click", async () => render(await window.license.recheck()));
+  $("quit").addEventListener("click", () => window.license.quit());
+  window.license.onView(render);
+  window.license.view().then(render);
+</script>
+</body>
+</html>

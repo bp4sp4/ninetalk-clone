@@ -19,6 +19,23 @@
 - **종료**: 앱이 띄운 데몬은 앱을 끌 때 `POST /shutdown` 으로 정상 종료시키고(트레이 아이콘 제거, 카카오톡 창 복원), 3초 안에 안 꺼지면 강제 종료합니다. 앱이 비정상 종료되면 데몬이 `--parent-pid` 로 알아채고 스스로 꺼집니다.
 - 창 안에서는 대시보드 주소만 열리고, 다른 링크는 기본 브라우저로 엽니다.
 
+## 오피스 사용 허가 토큰 (`license/`, 2026-11-25)
+
+오피스 관리자 페이지(/admin 「한평생톡 사용 허가」)에서 발급한 토큰(`hpt_…`)이 있어야 앱이 켜집니다. 자세한 약속은 [`../docs/office-license-spec.md`](../docs/office-license-spec.md).
+
+- **켤 때**: 토큰이 없으면 토큰 입력 창만 뜹니다. 오피스가 허가해야 웹 서버·PC 프로그램을 시작하고 대시보드를 엽니다.
+- **실행 중**: 5분마다(오피스가 준 `checkAfterSec`) 다시 확인합니다. PC가 잠자기에서 깨면 바로 확인합니다.
+- **해제되면 (403)**: 대시보드의 새 발송을 막고, 보내던 사람까지 보내고 결과를 발송 내역에 기록한 뒤, 웹 서버·PC 프로그램을 멈추고 잠금 창을 띄웁니다. 잠금 창에는 「토큰 다시 넣기」·「다시 확인」 버튼이 있고, 통과하면 다시 시작합니다. 403을 받아도 저장된 토큰은 지우지 않습니다.
+- **오피스에 연결이 안 되면** (인터넷 끊김·서버 오류·403 이외의 응답): 마지막 확인 성공 뒤 24시간(`offlineGraceSec`)까지는 그대로 씁니다. 그 뒤에는 10초·30초 뒤 두 번 더 확인해 보고 잠급니다(잠자기에서 깬 직후 대비). PC 시계가 마지막 성공 시각보다 5분 넘게 이전이면 24시간 허용을 쓰지 않습니다. 403을 한 번 받으면 다시 허가될 때까지 24시간 허용도 없습니다.
+- **저장**: 사용자 데이터 폴더의 `license.json`(토큰·마지막 성공 시각·확인 간격·허용 시간을 `safeStorage` 로 함께 암호화해서, 파일을 고쳐 24시간을 늘릴 수 없음)과 `device-id`(이 PC 번호, 처음 실행 때 만듦). `device-id` 가 바뀌면 오피스가 다른 PC로 보고 거절합니다.
+  - 맥은 암호화 키를 키체인에 둡니다. 임시 서명 앱이라 **새 버전을 깔면 키체인 접근을 묻는 창이 뜰 수 있습니다**(「항상 허용」). 거부하면 토큰을 다시 넣으라고 합니다.
+- **주소**: 기본은 운영 오피스(`https://korhrd-group-db.vercel.app/api/hanpyeongtok/license`). `NINETALK_LICENSE_URL` 로 바꿀 수 있습니다. 설치한 앱은 https 주소만 받고, `npm start` 는 `http://localhost` 도 받습니다.
+  ```bash
+  NINETALK_LICENSE_URL=http://localhost:3000/api/hanpyeongtok/license npm start   # 로컬 오피스로 시험
+  NINETALK_SKIP_LICENSE=1 npm start   # 개발 중 확인 건너뛰기 (npm start 에서만 됨)
+  ```
+- 앱 코드는 고칠 수 있어서 완벽한 보안은 아닙니다(사내용).
+
 ## 맥에서 개발
 
 ```bash
@@ -70,6 +87,7 @@ GitHub 빌드 서버에서 맥(Apple Silicon `.dmg`)과 Windows(`.exe` 설치 �
 | 파일 | 내용 |
 |---|---|
 | `main.js` | 서버·데몬 시작, 창, 단일 인스턴스, 종료 시 자식 정리 |
+| `license/` | 오피스 사용 허가 토큰: 확인·저장(`index.js`), 토큰 입력·잠금 창(`window.html`, `preload.js`) |
 | `scripts/build-web.mjs` | `../web` 빌드 → `build/web` 복사. `.env*`·`data` 는 지워서 카카오 키·개인 데이터가 앱에 들어가지 않게 함 |
 | `scripts/build-daemon.mjs` | 데몬 게시 → `build/daemon` (Windows 전용) |
 | `scripts/build-daemon-mac.mjs` | 맥용 PC 프로그램 빌드 → `build/daemon-mac` (맥 전용) |
