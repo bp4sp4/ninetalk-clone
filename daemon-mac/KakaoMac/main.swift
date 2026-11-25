@@ -3,12 +3,13 @@
 //
 //   kakao-mac status                         → {"status": "Ready" | "NotRunning" | "LoggedOut" | "NoAccessibility"}
 //   kakao-mac friends                        → {"friends": [...names], "kakao_friend_count": 428}
-//   kakao-mac send <name> <text> [--image <path>]... [--image-first] [--send]
+//   kakao-mac send <name> <text> [--image <path>]... [--file <path>]... [--image-first] [--send]
 //                                            → {"result": "sent" | "dry_run_ok" | "failed", "error": "...", "detail": "..."}
 //
 // Without --send, `send` is a dry run: it opens the chat, puts the text in the input box and checks that the
-// send button is enabled, pastes each image and cancels KakaoTalk's image sheet, then clears up and closes
-// the chat. Nothing is sent. <text> may be empty when there are images.
+// send button is enabled, pastes each image and file and cancels KakaoTalk's image / file sheet, then clears up
+// and closes the chat. Nothing is sent. <text> may be empty when there are images or files.
+// Images go first, then files; --image-first puts both before the text.
 // Every command puts KakaoTalk back the way it was (tab, main window open/closed, frontmost app).
 
 import AppKit
@@ -203,14 +204,20 @@ final class Session {
         // filled (or stale) list would report a friend as "not found". Look the outline up again on every check
         // and wait until the "친구" section has as many rows as its header says ("친구 433"), or, when the header
         // has no number, until the row count stops changing.
+        // Up to 15 s: with the main window just reopened, a list of 400+ friends was seen still partly filled after 6 s.
         var latest: AXUIElement?
         var lastCount = -1
         var stable = 0
-        _ = waitFor(ms: 6000, step: 200) { () -> Bool? in
+        let started = Date()
+        defer {
+            let total = latest.map { ((attr($0, kAXRowsAttribute) as? [AXUIElement]) ?? []).count } ?? -1
+            debug("friends tab: \(lastCount) rows (outline \(total)) after \(Int(Date().timeIntervalSince(started) * 1000))ms, main window was \(hadMainWindow ? "open" : "closed"), tab \(kakao.currentTab(main))")
+        }
+        _ = waitFor(ms: 15000, step: 200) { () -> Bool? in
             guard let outline = kakao.friendOutline(main) else { return nil }
             latest = outline
             let (rows, header) = friendRows(outline)
-            if let header, header > 0 { return rows.count >= header ? true : nil }
+            if let header, header > 0 { lastCount = rows.count; return rows.count >= header ? true : nil }
             stable = rows.count > 0 && rows.count == lastCount ? stable + 1 : 0
             lastCount = rows.count
             return stable >= 3 ? true : nil
@@ -304,22 +311,37 @@ func friendListFocusProblem(_ kakao: Kakao, _ main: AXUIElement, _ outline: AXUI
     return "element"
 }
 
-func send(name rawName: String, text rawText: String, images: [String], imageFirst: Bool, really: Bool) -> Never {
+func send(name rawName: String, text rawText: String, images: [String], files: [String], imageFirst: Bool, really: Bool) -> Never {
     let name = norm(rawName)
     // A text of only spaces is no text (the dashboard checks the same with trim).
     let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : rawText
     if name.isEmpty { fail("not_found", "empty_name") }
-    if text.isEmpty && images.isEmpty { fail("send_failed", "empty_text") }
+    if text.isEmpty && images.isEmpty && files.isEmpty { fail("send_failed", "empty_text") }
     let loaded = images.map { NSImage(contentsOfFile: $0) }
     if loaded.contains(where: { $0 == nil }) { fail("send_failed", "image_unreadable") }
+    if files.contains(where: { !FileManager.default.isReadableFile(atPath: $0) }) { fail("send_failed", "file_unreadable") }
 
     let session = openSession()
     let kakao = session.kakao
     var closeAfter: AXUIElement? // the chat window this run opened
-    // Images go through the clipboard; whatever the user had there is put back afterwards.
-    let clipboard = images.isEmpty ? nil : ClipboardBackup()
+    // Images and files go through the clipboard; whatever the user had there is put back afterwards.
+    let clipboard = images.isEmpty && files.isEmpty ? nil : ClipboardBackup()
     activeClipboard = clipboard
+    // From a paste until its sheet is dealt with: the image / file sheets that were already on screen, so a sheet
+    // that shows up late (after we gave up waiting) is still cancelled, and the user's own sheets are left alone.
+    var sheetsBeforePaste: [AXUIElement]?
+    func allSheets() -> [AXUIElement] { kakao.windows.compactMap { attachSheet($0) } }
+    func cancelLateSheets() {
+        guard let before = sheetsBeforePaste else { return }
+        sheetsBeforePaste = nil
+        _ = waitFor(ms: 4000, step: 200) { () -> Bool? in
+            let late = allSheets().filter { sheet in !before.contains { same($0, sheet) } }
+            for sheet in late { if let cancel = sheetButton(sheet, "취소") { press(cancel) } }
+            return late.isEmpty ? nil : true
+        }
+    }
     func finish(_ out: [String: Any]) -> Never {
+        cancelLateSheets()
         if let chat = closeAfter {
             // A short pause before closing, so the last message settles in the chat (and closing does not look abrupt).
             if out["result"] as? String == "sent" { sleep(ms: 1500) }
@@ -340,7 +362,16 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
     // No "친구" section found: KakaoTalk's layout changed, so every name would be "not found". Stop the job instead.
     if allRows.isEmpty { failed("kakao_not_ready", "friends_list_empty") }
     let matches = allRows.filter { norm($0.name) == name }
-    if matches.isEmpty { failed("not_found") }
+    if matches.isEmpty {
+        if debugEnabled {
+            let names = allRows.map { norm($0.name) }
+            debug("not found among \(names.count) rows: \(names.filter(\.isEmpty).count) empty, \(Set(names).count) distinct")
+            sleep(ms: 2000)
+            let again = friendRows(session.kakao.friendOutline(session.main) ?? outline).rows.map { norm($0.name) }
+            debug("2s later: \(again.count) rows, \(again.filter(\.isEmpty).count) empty, \(Set(again).count) distinct, match \(again.filter { $0 == name }.count)")
+        }
+        failed("not_found")
+    }
     if matches.count > 1 { failed("duplicate_name", "\(matches.count)") }
     let row = matches[0].row
 
@@ -385,7 +416,11 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
     }
     if isNew(chat) { closeAfter = chat }
 
-    guard let parts = waitFor(ms: 2000, { chatParts(chat) }) else { failed("send_failed", "input_not_found") }
+    guard let firstParts = waitFor(ms: 2000, { chatParts(chat) }) else { failed("send_failed", "input_not_found") }
+    var parts = firstParts
+    // KakaoTalk can replace the chat's elements after a send (seen on 26.8 after a file: the old message table
+    // answered with no rows), so every step looks them up again before it starts.
+    func refreshParts() { if let fresh = chatParts(chat) { parts = fresh } }
 
     // Someone's unsent draft: never overwrite it or send it along.
     if !str(parts.input, kAXValueAttribute).isEmpty { failed("send_failed", "input_not_empty") }
@@ -399,6 +434,7 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
     }
 
     func sendText() {
+        refreshParts()
         // From here until the send, a termination takes our text back out of the input box.
         activeInput = (parts.input, norm(text))
         defer { activeInput = nil }
@@ -446,6 +482,7 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
     }
 
     func sendImage(_ image: NSImage) {
+        refreshParts()
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         guard pasteboard.writeObjects([image]) else { stepFailed("clipboard_failed") }
@@ -464,15 +501,16 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
         // From the paste on, a termination cancels this chat's image sheet even before we have found it.
         activeChat = chat
         defer { activeChat = nil; activeSheet = nil }
+        sheetsBeforePaste = allSheets()
         postKey(kakao.app.processIdentifier, 9 /* V */, .maskCommand)
         // KakaoTalk shows an image sheet: preview, caption box, 취소 / 전송.
         guard let sheet = waitFor(ms: 4000, { imageSheet(chat) }) else {
             if !str(parts.input, kAXValueAttribute).isEmpty { clearInput(parts.input) }
-            // If the paste landed in another chat (focus moved at the last moment), its sheet must not stay there
-            // for someone to send by pressing Return: cancel image sheets in every KakaoTalk window.
-            for window in kakao.windows { if let other = imageSheet(window), let cancel = sheetButton(other, "취소") { press(cancel) } }
+            // A sheet that shows up late, or in another chat (focus moved at the last moment), must not stay there
+            // for someone to send by pressing Return: finish() cancels any new one.
             stepFailed("image_sheet_not_shown")
         }
+        sheetsBeforePaste = nil
         activeSheet = sheet
         guard let button = sheetButton(sheet, really ? "전송" : "취소") else {
             if let cancel = sheetButton(sheet, "취소") { press(cancel) }
@@ -506,16 +544,92 @@ func send(name rawName: String, text rawText: String, images: [String], imageFir
         allConfirmed = allConfirmed && uploaded
     }
 
+    /// One file: its URL goes on the clipboard, Cmd+V in the input box, and KakaoTalk shows a "파일 전송" sheet
+    /// whose button reads "1개 전송" (one file each time, so the button names exactly what we pasted).
+    func sendFile(_ path: String) {
+        refreshParts()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([URL(fileURLWithPath: path) as NSURL]) else { stepFailed("clipboard_failed") }
+        clipboard?.ourChangeCount = pasteboard.changeCount
+        set(parts.input, kAXFocusedAttribute, kCFBooleanTrue)
+        let focused = waitFor(ms: 1500) { () -> Bool? in
+            guard let window = element(kakao.root, kAXFocusedWindowAttribute), same(window, chat),
+                  let field = element(kakao.root, kAXFocusedUIElementAttribute), same(field, parts.input) else { return nil }
+            return true
+        }
+        guard focused != nil else { stepFailed("focus_failed:file") }
+        let rowsBefore = rowCount(parts.messages)
+        let filesBefore = sentFileRows(parts.messages).count
+        if debugEnabled {
+            let timed = sentFileRows(parts.messages).filter(rowHasTime).count
+            debug("before file (\(filesBefore) sent files in view, \(timed) with a time): " + lastRowsShape(parts.messages, 3))
+        }
+        // From the paste on, a termination cancels this chat's file sheet even before we have found it.
+        activeChat = chat
+        defer { activeChat = nil; activeSheet = nil }
+        sheetsBeforePaste = allSheets()
+        postKey(kakao.app.processIdentifier, 9 /* V */, .maskCommand)
+        // Any sheet with 취소: the file sheet, or something else KakaoTalk shows instead (a size limit, an image
+        // sheet for a picture file). Only the file sheet with its "1개 전송" button is ever pressed.
+        guard let sheet = waitFor(ms: 4000, { attachSheet(chat) }) else {
+            // The paste may have put the path in as text instead: take it back out (the box was empty before).
+            if !str(parts.input, kAXValueAttribute).isEmpty { clearInput(parts.input) }
+            // A late sheet, or one in another chat (focus moved at the last moment): finish() cancels any new one.
+            stepFailed("file_sheet_not_shown")
+        }
+        sheetsBeforePaste = nil
+        activeSheet = sheet
+        // Buttons only: the sheet's text holds the file name, which stays out of every log.
+        if debugEnabled { debug("file sheet buttons: " + descendants(sheet, maxDepth: 3) { role($0) == "AXButton" }.map { str($0, kAXTitleAttribute) }.joined(separator: ",")) }
+        guard fileSheet(chat) != nil, let button = sheetButton(sheet, really ? "1개 전송" : "취소") else {
+            if let cancel = sheetButton(sheet, "취소") { press(cancel) } else { postKey(kakao.app.processIdentifier, 53 /* Escape */, []) }
+            stepFailed("file_sheet_unexpected")
+        }
+        press(button)
+        guard waitFor(ms: 8000, { attachSheet(chat) == nil ? true : nil }) != nil else {
+            // Still a sheet on the chat. Cancel whichever is there now, so nothing stays queued for a stray Return.
+            let current = attachSheet(chat)
+            if let current, let cancel = sheetButton(current, "취소") { press(cancel) }
+            // The same file sheet: nothing went out from it. A different one (KakaoTalk answered the press with a
+            // question of its own): the file may have gone out, so never report it as a plain failure.
+            if !really || current.map({ same($0, sheet) }) ?? true { stepFailed("file_sheet_stuck") }
+            failed("unknown_result", "file_sheet_changed")
+        }
+        activeSheet = nil
+        activeChat = nil
+        if !really { return }
+        sentSteps += 1
+        // As with images: the file row appears at once, the upload is done when it gets its time label or a 공유
+        // button. Closing the chat earlier makes KakaoTalk ask "닫으시면 ... 보내지지 않습니다".
+        // The message table is looked up again on every check: after a file is sent KakaoTalk replaced it, and the
+        // old element answered with no rows (seen on 26.8: the file arrived, the old table stayed empty).
+        let messages = { chatParts(chat)?.messages ?? parts.messages }
+        let appeared = waitFor(ms: 8000, step: 200) { rowCount(messages()) > rowsBefore ? true : nil } ?? false
+        let uploadStart = Date()
+        // Counted like images: one more finished file row among the newest rows than before.
+        let uploaded = appeared && (waitFor(ms: 90000, step: 300) {
+            sentFileRows(messages(), addedSince: rowsBefore).count > filesBefore ? true : nil
+        } ?? false)
+        if debugEnabled { debug("after file: " + lastRowsShape(messages(), 3)) }
+        debug("file appeared=\(appeared) uploaded=\(uploaded) after \(Int(Date().timeIntervalSince(uploadStart) * 1000))ms")
+        allConfirmed = allConfirmed && uploaded
+    }
+
     let imageSteps = loaded.compactMap { $0 }
-    if imageFirst {
+    func sendAttachments() {
         imageSteps.forEach(sendImage)
+        files.forEach(sendFile)
+    }
+    if imageFirst {
+        sendAttachments()
         if !text.isEmpty { sendText() }
     } else {
         if !text.isEmpty { sendText() }
-        imageSteps.forEach(sendImage)
+        sendAttachments()
     }
-    if !really { finish(["result": "dry_run_ok", "images": imageSteps.count]) }
-    finish(["result": "sent", "confirmed": allConfirmed, "images": imageSteps.count])
+    if !really { finish(["result": "dry_run_ok", "images": imageSteps.count, "files": files.count]) }
+    finish(["result": "sent", "confirmed": allConfirmed, "images": imageSteps.count, "files": files.count])
 }
 
 // MARK: - Images
@@ -549,9 +663,9 @@ final class ClipboardBackup {
     }
 }
 
-/// Set while images go through the clipboard, so a termination (server.mjs timeout) still puts it back.
+/// Set while images and files go through the clipboard, so a termination (server.mjs timeout) still puts it back.
 var activeClipboard: ClipboardBackup?
-/// The image sheet on screen, cancelled if we are terminated while it is open.
+/// The image or file sheet on screen, cancelled if we are terminated while it is open.
 var activeSheet: AXUIElement?
 /// The chat an image was just pasted into, until its sheet closes: a termination before the sheet was found
 /// still looks for it there.
@@ -563,8 +677,8 @@ let terminationSource: DispatchSourceSignal = {
     signal(SIGTERM, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
     source.setEventHandler {
-        // Cut off (server.mjs timeout): never leave an image sheet behind for a stray Return to send.
-        if let sheet = activeSheet ?? activeChat.flatMap({ imageSheet($0) }), let cancel = sheetButton(sheet, "취소") { press(cancel) }
+        // Cut off (server.mjs timeout): never leave an image or file sheet behind for a stray Return to send.
+        if let sheet = activeSheet ?? activeChat.flatMap({ attachSheet($0) }), let cancel = sheetButton(sheet, "취소") { press(cancel) }
         if let (input, text) = activeInput, norm(str(input, kAXValueAttribute)) == text { clearInput(input) }
         activeClipboard?.restore()
         exit(143)
@@ -585,6 +699,19 @@ func postKey(_ pid: pid_t, _ code: CGKeyCode, _ flags: CGEventFlags) {
 /// KakaoTalk's "send image" sheet on a chat window (it has both 취소 and 전송 buttons).
 func imageSheet(_ chat: AXUIElement) -> AXUIElement? {
     children(chat).first { role($0) == "AXSheet" && sheetButton($0, "전송") != nil && sheetButton($0, "취소") != nil }
+}
+
+/// KakaoTalk's "파일 전송" sheet for one pasted file: a 취소 and a "1개 전송" button.
+func fileSheet(_ chat: AXUIElement) -> AXUIElement? {
+    children(chat).first { sheet in
+        role(sheet) == "AXSheet" && sheetButton(sheet, "1개 전송") != nil && sheetButton(sheet, "취소") != nil
+            && !descendants(sheet, maxDepth: 3, where: { role($0) == "AXStaticText" && str($0, kAXValueAttribute) == "파일 전송" }).isEmpty
+    }
+}
+
+/// Any sheet on the chat that can be cancelled (image, file, or a sheet KakaoTalk shows instead).
+func attachSheet(_ chat: AXUIElement) -> AXUIElement? {
+    children(chat).first { role($0) == "AXSheet" && sheetButton($0, "취소") != nil }
 }
 
 func sheetButton(_ sheet: AXUIElement, _ title: String) -> AXUIElement? {
@@ -685,12 +812,23 @@ func imageOnlyRows(_ table: AXUIElement?, addedSince before: Int? = nil) -> [AXU
         !descendants(row, maxDepth: 4) { role($0) == "AXImage" }.isEmpty && rowTexts(row).allSatisfy { $0.isEmpty }
     }
 }
+/// A file message whose upload is done: its row has 공유 and 열기 / "Finder에서 보기" buttons (26.8).
+/// (Checked on a sent file only; how the row looks during an upload has not been seen.)
+func sentFileRows(_ table: AXUIElement?, addedSince before: Int? = nil) -> [AXUIElement] {
+    recentRows(table, addedSince: before).filter { row in
+        let labels = descendants(row, maxDepth: 4) { role($0) == "AXButton" }.map { str($0, kAXTitleAttribute) + str($0, kAXDescriptionAttribute) }
+        return labels.contains { $0.contains("공유") } && labels.contains { $0.contains("Finder에서 보기") || $0.contains("열기") }
+    }
+}
 /// Upload finished: the image row shows a 공유 (share) button or its sent time ("오후 3:12").
 func imageRowUploaded(_ row: AXUIElement) -> Bool {
     let parts = descendants(row, maxDepth: 4) { _ in true }
     let hasShare = parts.contains { role($0) == "AXButton" && (str($0, kAXTitleAttribute) + str($0, kAXDescriptionAttribute)).contains("공유") }
-    let hasTime = parts.contains { role($0) == "AXStaticText" && str($0, kAXValueAttribute).range(of: #"^(오전|오후)\s?\d{1,2}:\d{2}$"#, options: .regularExpression) != nil }
-    return hasShare || hasTime
+    return hasShare || rowHasTime(row)
+}
+/// The row shows a sent time ("오후 3:12").
+func rowHasTime(_ row: AXUIElement) -> Bool {
+    descendants(row, maxDepth: 4) { role($0) == "AXStaticText" && str($0, kAXValueAttribute).range(of: #"^(오전|오후)\s?\d{1,2}:\d{2}$"#, options: .regularExpression) != nil }.count > 0
 }
 
 
@@ -703,6 +841,7 @@ case "status": status()
 case "friends": friends()
 case "send" where args.count >= 3:
     var images: [String] = []
+    var files: [String] = []
     var imageFirst = false
     var really = false
     var rest = Array(args.dropFirst(3))
@@ -712,13 +851,14 @@ case "send" where args.count >= 3:
         case "--send": really = true
         case "--image-first": imageFirst = true
         case "--image" where !rest.isEmpty: images.append(rest.removeFirst())
+        case "--file" where !rest.isEmpty: files.append(rest.removeFirst())
         default:
             FileHandle.standardError.write("unknown option \(flag)\n".data(using: .utf8)!)
             exit(2)
         }
     }
-    send(name: args[1], text: args[2], images: images, imageFirst: imageFirst, really: really)
+    send(name: args[1], text: args[2], images: images, files: files, imageFirst: imageFirst, really: really)
 default:
-    FileHandle.standardError.write("usage: kakao-mac status | friends | send <name> <text> [--image <path>]... [--image-first] [--send]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: kakao-mac status | friends | send <name> <text> [--image <path>]... [--file <path>]... [--image-first] [--send]\n".data(using: .utf8)!)
     exit(2)
 }

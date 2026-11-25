@@ -10,7 +10,7 @@ export const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 export const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** Programs and scripts: KakaoTalk refuses or warns about them, and they have no place in a bulk message. */
-const BLOCKED_EXTENSIONS = new Set(["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jse", "wsf", "dll", "lnk", "app", "pkg", "dmg", "sh"]);
+const BLOCKED_EXTENSIONS = new Set(["exe", "msi", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jse", "wsf", "dll", "lnk", "app", "pkg", "dmg", "sh", "command"]);
 
 export const isImageType = (mime: string) => IMAGE_TYPES.has(mime);
 

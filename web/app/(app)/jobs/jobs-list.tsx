@@ -51,7 +51,7 @@ function attachmentLabel(job: JobSummary) {
 
 /** Why this PC program cannot send the job's attachments, or null. */
 function unsupportedReason(job: JobSummary, support: Support) {
-  if (job.documentCount > 0 && !support.files) return "이 PC 프로그램은 파일을 보낼 수 없습니다(지금은 Windows PC 프로그램만 지원).";
+  if (job.documentCount > 0 && !support.files) return "이 PC 프로그램은 파일을 보낼 수 없습니다. PC 프로그램(한평생톡)을 최신 버전으로 업데이트해 주세요.";
   if (job.fileCount > job.documentCount && !support.images) return "이 PC 프로그램은 사진을 보낼 수 없습니다. 앱을 새 버전으로 업데이트해 주세요.";
   return null;
 }

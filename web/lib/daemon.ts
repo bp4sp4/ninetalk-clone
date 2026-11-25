@@ -61,7 +61,7 @@ export const DAEMON_STATE_LABELS: Record<string, string> = {
 /** POST /send refusals (DAEMON_API.md), worded for the user. */
 const BAD_REQUEST_LABELS: Record<string, string> = {
   images_not_supported: "이 PC 프로그램은 이미지를 보낼 수 없습니다. 앱을 새 버전으로 업데이트해 주세요.",
-  files_not_supported: "이 PC 프로그램은 파일을 보낼 수 없습니다(지금은 Windows PC 프로그램만 지원).",
+  files_not_supported: "이 PC 프로그램은 파일을 보낼 수 없습니다. PC 프로그램(한평생톡)을 최신 버전으로 업데이트해 주세요.",
   "file too large or empty": "파일이 너무 크거나 비어 있습니다 (20MB까지).",
   "file name not allowed": "보낼 수 없는 파일 이름이나 형식입니다(실행 파일 등).",
   "at most 5 attachments": "사진·파일은 합쳐서 5개까지 보낼 수 있습니다.",
@@ -123,7 +123,7 @@ export const SEND_ERROR_LABELS: Record<string, string> = {
   send_failed: "전송 실패",
   kakao_not_ready: "카카오톡 준비 안 됨",
   input_not_empty: "채팅방 입력창에 쓰던 글이 있어 보내지 않음",
-  partial_sent: "일부만 보냄 (문구나 이미지 중 일부) — 채팅방에서 확인하세요",
+  partial_sent: "일부만 보냄 (문구·이미지·파일 중 일부) — 채팅방에서 확인하세요",
   unknown_result: "보냈는지 알 수 없음 (PC 프로그램이 중간에 멈춤) — 채팅방에서 확인하세요",
   dry_run: "시험 실행(dry-run)이라 실제로 보내지 않음",
 };
